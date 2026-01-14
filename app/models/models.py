@@ -83,3 +83,10 @@ class Appointment(Base):
     # Relationships
     customer = relationship("Customer", back_populates="appointments")
     barber = relationship("Barber", back_populates="appointments")
+
+class ProcessedMessage(Base):
+    __tablename__ = "processed_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    message_id = Column(String, unique=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)

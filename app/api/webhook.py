@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Request, HTTPException, Depends, Body, BackgroundTasks
 from app.core.config import settings
-from app.core.database import SessionLocal 
+from app.core.database import SessionLocal, get_db 
 from sqlalchemy.orm import Session
 from app.core.logging_config import logger
 import asyncio
@@ -9,23 +9,11 @@ from collections import OrderedDict
 
 router = APIRouter()
 
-# Simple in-memory deduplication cache
-# Key: Message ID, Value: Timestamp (or just presence)
-# Limit size to prevent memory leaks
-class RequestCache:
-    def __init__(self, capacity=1000):
-        self.cache = OrderedDict()
-        self.capacity = capacity
+from app.models.models import ProcessedMessage
+from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
-    def is_processed(self, msg_id):
-        if msg_id in self.cache:
-            return True
-        self.cache[msg_id] = True
-        if len(self.cache) > self.capacity:
-            self.cache.popitem(last=False) # Remove oldest
-        return False
-
-dedup_cache = RequestCache()
+# Removing in-memory cache
 
 def process_background_message(phone_number_id: str, from_number: str, msg_body: str, msg_type: str, interactive_id: str):
     # Create a NEW session for the background task
@@ -58,7 +46,7 @@ async def verify_webhook(request: Request):
     return {"status": "ok"}
 
 @router.post("/webhook")
-def receive_webhook(background_tasks: BackgroundTasks, body: dict = Body(...)):
+def receive_webhook(background_tasks: BackgroundTasks, body: dict = Body(...), db: Session = Depends(get_db)):
     """
     Receives incoming messages from WhatsApp. Returns 200 OK immediately.
     """
@@ -72,10 +60,27 @@ def receive_webhook(background_tasks: BackgroundTasks, body: dict = Body(...)):
                     for message in params_messages:
                         msg_id = message.get("id")
                         
-                        # Deduplication Check
-                        if dedup_cache.is_processed(msg_id):
-                            logger.info(f"Duplicate message ignored: {msg_id}")
+                        # Deduplication Check (DB Based)
+                        try:
+                            exists = db.query(ProcessedMessage).filter(ProcessedMessage.message_id == msg_id).first()
+                            if exists:
+                                logger.info(f"Duplicate message ignored: {msg_id}")
+                                continue
+                            
+                            # Log message as processed
+                            new_msg = ProcessedMessage(message_id=msg_id)
+                            db.add(new_msg)
+                            db.commit()
+                            
+                        except IntegrityError:
+                            db.rollback()
+                            logger.info(f"Duplicate message detected (race condition): {msg_id}")
                             continue
+                        except Exception as e:
+                            logger.error(f"Error checking deduplication: {e}")
+                            # Continue processing even if DB check fails? Safer to fail open or closed?
+                            # Failing open (processing) is better than dropping.
+                            pass
 
                         from_number = message.get("from")
                         msg_type = message.get("type")

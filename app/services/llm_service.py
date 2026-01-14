@@ -21,44 +21,30 @@ class LLMService:
         if not self.client:
             return {"intent": "ERROR", "reply": "Error de configuración de IA."}
 
-        prompt = f"""
-        act as the receptionist assistant for a barbershop called {context.get('business_name')}.
-        Current Date: {context.get('today')} ({context.get('day_name')}).
-        Available Barbers: {', '.join(context.get('barbers', []))}.
-        
-        User Message: "{message_body}"
-        Current State: {context.get('current_state')}
-        
-        Conversation History (Last 5 messages):
-        {json.dumps(context.get('history', []), ensure_ascii=False)}
-        
-        Your goal is to extract structured data to help the system process the request.
-        
-        JSON SCHEMA:
-        {{
-            "intent": "BOOK_APPOINTMENT" | "CANCEL_APPOINTMENT" | "RESCHEDULE" | "CHITCHAT" | "UNKNOWN" | "PROVIDE_NAME" | "CONFIRM_APPOINTMENT",
-            "extracted": {{
-                "barber_name": "string or null",
-                "date": "YYYY-MM-DD or null",
-                "time": "HH:MM (24h) or null",
-                "time_period": "morning" | "afternoon" | "evening" | null,
-                "customer_name": "string or null"
-            }},
-            "reply": "A friendly, natural language response in Spanish. keep it short (<30 words). If you need more info (like date or barber), ask for it here."
-        }}
-        
-        RULES:
-        1. If user says "Agendar con Alejandro", intent is BOOK_APPOINTMENT, barber_name="Alejandro".
-        2. If user provides a date like "Mañana", calculate it based on Current Date.
-        3. If provided date is "El viernes", calculate the NEXT Friday.
-        4. If user says "Hola", intent is CHITCHAT.
-        5. If user gives their name (e.g. in ASK_NAME state), intent is PROVIDE_NAME.
-        6. If user says "Si", "Confirmar", "Esta bien", "Dale" AND Current State is CONFIRM_BOOKING, intent is CONFIRM_APPOINTMENT.
-        7. If user ONLY specifies time (e.g. "a las 4", "en la tarde") and a Date was already discussed in history, KEEP THE SAME DATE (do not default to Today). Output date=null in this case so system keeps previous value.
-        8. If user says "en la tarde", set time_period="afternoon". If "en la mañana", time_period="morning".
-        9. If user says "Gracias" or "Adios", intent is CHITCHAT, but make the reply a closing statement.
-        10. Always output valid JSON only. Do not add markdown backticks.
-        """
+        try:
+            with open("app/core/prompts.yaml", "r", encoding="utf-8") as f:
+                import yaml
+                prompts = yaml.safe_load(f)
+            
+            template = prompts.get("system_prompt", "")
+            
+            # Use safe formatting or manual replacement to handle checking for braces in the yaml if needed.
+            # But here we formatted the yaml to leverage simple f-string style replacement manually or using .format()
+            # However, the yaml contains JSON schema braces {{ }}, so we need to be careful.
+            # The simplest way given the code structure is to verify the template works.
+            
+            # Replacing placeholders. Using replace() is safer than format() given the JSON schema braces.
+            prompt = template.replace("{business_name}", str(context.get('business_name'))) \
+                             .replace("{today}", str(context.get('today'))) \
+                             .replace("{day_name}", str(context.get('day_name'))) \
+                             .replace("{barbers}", ', '.join(context.get('barbers', []))) \
+                             .replace("{message_body}", message_body) \
+                             .replace("{current_state}", str(context.get('current_state'))) \
+                             .replace("{history}", json.dumps(context.get('history', []), ensure_ascii=False))
+                             
+        except Exception as e:
+            logger.error(f"Error loading prompt: {e}")
+            return {"intent": "ERROR", "reply": "Error interno de configuración."}
         
         try:
             # logger.debug(f"LLM Prompt: {prompt}") # Uncomment for verbose debugging
