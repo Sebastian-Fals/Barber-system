@@ -42,14 +42,31 @@ class ConversationService:
             self._handle_interactive(customer, interactive_id, from_number)
             return
 
-        # 2. Fast Path (Bypass LLM)
+        # 2. Deterministic / Fast Path Logic
         low_body = message_body.lower().strip()
         keywords = ["hola", "menu", "inicio", "empezar", "reset", "cancelar"]
-        if any(low_body == k for k in keywords):
+        is_keyword = any(low_body == k for k in keywords)
+
+        # Logic Gate: AI Enabled check
+        ai_enabled = self.business.ai_enabled if hasattr(self.business, 'ai_enabled') else True
+        
+        # If AI is disabled, we force valid keywords or Show Menu helper
+        if not ai_enabled:
+             if is_keyword:
+                 self.flow_manager.update_state(customer, CustomerData.IDLE, {})
+                 self._send_welcome_menu(customer)
+             else:
+                 # Fallback for Deterministic Mode
+                 self._send_deterministic_fallback(customer)
+             return
+
+        # If AI is enabled, keywords still take precedence for reset/menu
+        if is_keyword:
             self.flow_manager.update_state(customer, CustomerData.IDLE, {})
             self._send_welcome_menu(customer)
             return
 
+        # 3. AI Hybrid Path (Only if enabled and not a keyword)
         # Build Context for LLM
         barbers = self.db.query(Barber).filter(Barber.business_id == self.business.id).all()
         barber_names = [b.name for b in barbers]
@@ -164,6 +181,25 @@ class ConversationService:
                   self.flow_manager.update_state(customer, customer.conversation_state, current_data)
                   whatsapp_service.send_message(self.phone_number_id, from_number, "No hay cita pendiente.")
 
+        elif intent == "CANCEL_INTENT":
+             # List active appointments to cancel
+             appts = self.db.query(Appointment).filter(
+                 Appointment.customer_id == customer.id, 
+                 Appointment.status == AppointmentStatus.CONFIRMED,
+                 Appointment.start_time > datetime.datetime.utcnow()
+             ).all()
+             
+             if not appts:
+                 whatsapp_service.send_message(self.phone_number_id, from_number, "No tienes citas activas para cancelar.")
+             else:
+                 msg = "Selecciona la cita que deseas cancelar:"
+                 buttons = []
+                 for appt in appts[:3]: # Limit 3
+                     display = appt.start_time.strftime("%d/%m %H:%M")
+                     buttons.append({"id": f"rem_cancel_{appt.id}", "title": display})
+                 whatsapp_service.send_interactive_button(self.phone_number_id, from_number, msg, buttons)
+                 self.flow_manager.update_state(customer, CustomerData.IDLE, {})
+
         else:
             self.flow_manager.update_state(customer, customer.conversation_state, current_data)
             whatsapp_service.send_message(self.phone_number_id, from_number, reply)
@@ -220,7 +256,7 @@ class ConversationService:
         else:
             self._send_slot_menu(customer, target_date, slots)
 
-    def _send_welcome_menu(self, customer, page=0):
+    def _send_welcome_menu(self, customer, page=0, message_body=None):
         barbers = self.db.query(Barber).filter(Barber.business_id == self.business.id).all()
         start = page * 2; end = start + 2
         batch = barbers[start:end]
@@ -228,7 +264,7 @@ class ConversationService:
         buttons = []
         for b in batch: buttons.append({"id": f"barber_{b.id}", "title": b.name})
         
-        msg = f"Hola {customer.name or 'amigo'}! Bienvenido a *{self.business.name}*."
+        msg = message_body if message_body else f"Hola {customer.name or 'amigo'}! Bienvenido a *{self.business.name}*."
         whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
         self.flow_manager.update_state(customer, CustomerData.SELECT_BARBER, {"page": page})
 
@@ -259,8 +295,10 @@ class ConversationService:
              return
 
         self._send_slot_menu(customer, target_date, slots)
-        data["date"] = target_date.strftime("%Y-%m-%d")
-        self.flow_manager.update_state(customer, CustomerData.SELECT_SLOT, data)
+
+    def _send_deterministic_fallback(self, customer):
+        msg = f"Hola {customer.name or 'amigo'}. Para ayudarte, por favor selecciona una opción del menú 👇"
+        self._send_welcome_menu(customer, message_body=msg)
 
     def _send_slot_menu(self, customer, target_date, slots, page=0, header=None):
         start = page * 3 # limit 3 for buttons

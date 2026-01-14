@@ -17,6 +17,7 @@ class Business(Base):
     name = Column(String, index=True)
     phone_number_id = Column(String, unique=True, index=True, nullable=False)
     calendar_id = Column(String, nullable=True, comment="Master calendar for the business")
+    ai_enabled = Column(Boolean, default=True) # New flag for Hybrid Flow
     
     # Hours (24h format integer) - DEPRECATED in favor of schedule, kept for backwards compat
     open_hour = Column(Integer, default=9)
