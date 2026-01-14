@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+sqlalchemy
+pydantic
+pydantic-settings
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+python-dotenv
+requests
+google-auth-oauthlib
+python-dotenv
+requests
+dateparser
+pyspellchecker
+apscheduler
