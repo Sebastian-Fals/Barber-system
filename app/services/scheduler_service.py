@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
 from app.models.models import Appointment, Customer, Barber, AppointmentStatus
 from app.services.whatsapp_service import whatsapp_service
+from app.core.logging_config import logger
 import datetime
 
 scheduler = BackgroundScheduler()
@@ -52,7 +53,7 @@ def check_upcoming_appointments():
             db.commit()
 
     except Exception as e:
-        print(f"Error in Scheduler: {e}")
+        logger.error(f"Error in Scheduler: {e}", exc_info=True)
     finally:
         db.close()
 
@@ -91,4 +92,4 @@ def start_scheduler():
     if not scheduler.running:
         scheduler.add_job(check_upcoming_appointments, 'interval', minutes=10) # Run every 10 mins
         scheduler.start()
-        print("Scheduler started!")
+        logger.info("Scheduler started!")

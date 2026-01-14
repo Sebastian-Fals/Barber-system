@@ -4,122 +4,314 @@ from sqlalchemy.orm import Session
 from app.models.models import Customer, Business, Barber, CustomerData, Appointment, AppointmentStatus
 from app.services.whatsapp_service import whatsapp_service
 from app.services.calendar_service import calendar_service
-import dateparser
-from app.utils.nlp import correct_typos
+from app.services.llm_service import llm_service
+from app.core.logging_config import logger
 
 class ConversationService:
     def __init__(self, db: Session, phone_number_id: str):
         self.db = db
         self.phone_number_id = phone_number_id
-        # Context: Identify Business
         self.business = db.query(Business).filter(Business.phone_number_id == phone_number_id).first()
 
     def handle_incoming_message(self, from_number: str, message_body: str, message_type: str = "text", interactive_id: str = None):
-        if not self.business:
-            print(f"ErrorContext: No business found for {self.phone_number_id}")
+        if not self.business: 
+            logger.error(f"No business found for phone_number_id: {self.phone_number_id}")
+            return
+        
+        # Log Incoming
+        logger.info(f"Msg from {from_number} | Type: {message_type} | ID: {interactive_id} | Body: {message_body}")
+
+        # Ignore empty inputs
+        if not message_body and not interactive_id:
+            logger.warning(f"Ignored empty message from {from_number}")
             return
 
-        # 1. Get or Create Customer
+        # 1. Get/Create Customer
         customer = self.db.query(Customer).filter(Customer.phone == from_number).first()
         if not customer:
-            # Multi-tenancy: default name is None or generic, we trigger ASK_NAME later
+            logger.info(f"New Customer detected: {from_number}")
             customer = Customer(phone=from_number, name="Cliente Nuevo")
-            self.db.add(customer)
-            self.db.commit()
-            print(f"Created new customer: {from_number}")
+            self.db.add(customer); self.db.commit()
 
-        # State Machine Logic
-        state = customer.conversation_state
-        print(f"DEBUG: Processing message from {from_number} in state {state}")
+        # Context Building
+        barbers = self.db.query(Barber).filter(Barber.business_id == self.business.id).all()
+        barber_names = [b.name for b in barbers]
+        
+        today = datetime.date.today()
+        # Spanish day name map
+        days_es = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
+        
+        context = {
+            "current_state": customer.conversation_state,
+            "business_name": self.business.name,
+            "today": today.strftime("%Y-%m-%d"),
+            "day_name": days_es[today.weekday()],
+            "barbers": barber_names
+        }
 
-        # RESET COMMAND (For testing)
-        if message_type == "text" and message_body.lower() in ["reset", "hola", "inicio", "menu"]:
-            self._update_state(customer, CustomerData.IDLE, {})
-            self._send_welcome_menu(customer)
-            return
-
-        # GLOBAL INTERACTIVE HANDLERS (Stateless guards)
-        # Fix for pagination buttons falling through if state is somehow wrong
-        if interactive_id and interactive_id.startswith("slotpage_"):
-            self._handle_slot_selection(customer, interactive_id)
-            return
-        if interactive_id and interactive_id.startswith("page_"):
-            self._handle_barber_selection(customer, interactive_id)
-            return
-            
-        # Reminder Actions
-        if interactive_id and any(interactive_id.startswith(x) for x in ["rem_confirm_", "rem_reschedule_", "rem_cancel_"]):
-            self._handle_reminder_action(customer, interactive_id)
-            return
-
-        if state == "ASK_NAME":
-            # Save Name
-            name = message_body.strip()
-            if len(name) < 2:
-                whatsapp_service.send_message(self.phone_number_id, from_number, "Por favor, escribe tu nombre real para poder atenderte mejor.")
+        # Handling Interactive payloads purely as shortcuts (bypass LLM if specific ID)
+        if interactive_id:
+             if interactive_id.startswith("time_"):
+                self._handle_slot_selection(customer, interactive_id) 
                 return
-            
-            customer.name = name
+             if interactive_id.startswith("barber_"):
+                self._handle_barber_selection(customer, interactive_id)
+                return
+             if interactive_id.startswith("date_"):
+                 # Handle date shortcuts
+                 if interactive_id == "date_today": self._handle_date_selection(customer, "hoy")
+                 elif interactive_id == "date_tomorrow": self._handle_date_selection(customer, "mañana")
+                 elif interactive_id == "date_other":
+                      whatsapp_service.send_message(self.phone_number_id, from_number, "Escribe la fecha que prefieras (ej: 'El viernes')")
+                 return
+             
+             if interactive_id == "confirm_yes":
+                self._finalize_booking(customer)
+                return
+             if interactive_id == "confirm_no":
+                self._update_state(customer, CustomerData.IDLE, {})
+                whatsapp_service.send_message(self.phone_number_id, from_number, "Cancelado. ¿En qué más puedo ayudarte?")
+                return
+                
+             # Reminder Actions
+             if interactive_id.startswith("rem_confirm_"):
+                 appt_id = int(interactive_id.split("_")[2])
+                 # Logic to mark confirmed? For now, just say thanks.
+                 # Ideally update status to 'RECONFIRMED' if model supports it, or just log it.
+                 logger.info(f"Appointment {appt_id} confirmed by user.")
+                 whatsapp_service.send_message(self.phone_number_id, from_number, "¡Gracias! Tu asistencia ha sido confirmada. Nos vemos. 💈")
+                 return
+                 
+             if interactive_id.startswith("rem_cancel_"):
+                 appt_id = int(interactive_id.split("_")[2])
+                 # Cancel appointment
+                 appt = self.db.query(Appointment).filter(Appointment.id == appt_id).first()
+                 if appt:
+                     appt.status = AppointmentStatus.CANCELLED
+                     # Remove from GCal?
+                     if appt.google_event_id and appt.barber.calendar_id:
+                          calendar_service.delete_event(appt.barber.calendar_id, appt.google_event_id)
+                     self.db.commit()
+                     whatsapp_service.send_message(self.phone_number_id, from_number, "Tu cita ha sido cancelada correctamente.")
+                 else:
+                     whatsapp_service.send_message(self.phone_number_id, from_number, "No encontré esa cita, pero no te preocupes.")
+                 return
+                 
+             if interactive_id.startswith("rem_reschedule_"):
+                  # Trigger reschedule flow
+                  # Use LLM context or manual flow? Manual is safer.
+                  # Just send them to select date again.
+                  whatsapp_service.send_message(self.phone_number_id, from_number, "Claro, busquemos otro horario. ¿Para qué fecha te gustaría?")
+                  # Need to know which barber? Assuming current context or ask again.
+                  # Safer: Update state to SELECT_DATE if we know barber, else IDLE.
+                  # Try to get barber from appt if possible, but simpler to just ask date and let NLU pick it up or button flow.
+                  self._update_state(customer, CustomerData.IDLE, {}) # Reset to let them talk naturally
+                  return
+
+        # 2. Fast Path (Bypass LLM for basic actions)
+        low_body = message_body.lower().strip()
+        keywords = ["hola", "menu", "inicio", "empezar", "reset", "cancelar"]
+        if any(low_body == k for k in keywords):
+            logger.info(f"FAST PATH Triggered: {low_body}")
             self._update_state(customer, CustomerData.IDLE, {})
-            whatsapp_service.send_message(self.phone_number_id, from_number, f"Un gusto, {name}! Ahora si, empecemos.")
             self._send_welcome_menu(customer)
             return
 
-        if state == CustomerData.IDLE:
-            # CHECK NAME FIRST
-            if customer.name == "Cliente Nuevo" or not customer.name:
-                 self._update_state(customer, "ASK_NAME", {})
-                 whatsapp_service.send_message(self.phone_number_id, from_number, "Hola! 👋 Antes de empezar, ¿cual es tu nombre?")
+        # Prepare Context & History
+        # Load conversation data to get history
+        current_data = self._get_data(customer)
+        history = current_data.get("history", [])
+        
+        # Append User Message
+        history.append({"role": "user", "content": message_body})
+        # Keep only last 10 messages to avoid token bloat
+        if len(history) > 10: history = history[-10:]
+
+        context["history"] = history
+
+        # LLM Analysis
+        try:
+            logger.info("Calling LLM...")
+            analysis = llm_service.analyze_message(message_body, context)
+            
+            # Guard: Ensure analysis is a dict (LLM might return a list)
+            if isinstance(analysis, list):
+                analysis = analysis[0] if analysis else {}
+            if not isinstance(analysis, dict):
+                analysis = {}
+                
+            intent = analysis.get("intent", "UNKNOWN")
+            extracted = analysis.get("extracted", {})
+            
+            # Guard: Ensure extracted is a dict
+            if isinstance(extracted, list):
+                extracted = {}
+            reply = analysis.get("reply", "No entendí.")
+            
+            # Append Assistant Reply to History
+            history.append({"role": "assistant", "content": reply})
+            current_data["history"] = history
+            
+            logger.info(f"LLM RESULT: Intent={intent} | Extracted={extracted}")
+            
+            # 3. Handle Fallback (LLM Down/RateLimit)
+            if intent == "FALLBACK" or intent == "OFFLINE":
+                 whatsapp_service.send_message(self.phone_number_id, from_number, "Estoy teniendo problemas de conexión con mi cerebro 🧠. Pero aquí tienes el menú:")
+                 self._send_welcome_menu(customer)
+                 return
+    
+            # Intent Routing
+            if intent == "PROVIDE_NAME" or (customer.conversation_state == "ASK_NAME" and len(message_body) > 2):
+                # Special case for name
+                name = extracted.get("customer_name") or message_body
+                customer.name = name
+                self._update_state(customer, CustomerData.IDLE, {})
+                whatsapp_service.send_message(self.phone_number_id, from_number, f"Gracias {name}. ¿En qué te ayudo hoy?")
+                return
+    
+            elif intent == "CHITCHAT":
+                 whatsapp_service.send_message(self.phone_number_id, from_number, reply)
+                 # Heuristic: If reply indicates closure or user said bye/thanks, clear history to be clean.
+                 # Simple check on user body or intent subtype (not available).
+                 # Check against keywords in message_body
+                 closing_keywords = ["gracias", "adios", "bye", "chao", "hasta luego", "listo"]
+                 if any(k in message_body.lower() for k in closing_keywords):
+                      logger.info("Closing conversation (CHITCHAT). Clearing history.")
+                      self._update_state(customer, CustomerData.IDLE, {})
+                 else:
+                      self._update_state(customer, customer.conversation_state, current_data) # Save history
+                 return
+    
+            elif intent == "BOOK_APPOINTMENT":
+                # 1. Update Conversation Data with what we found
+                current_data = self._get_data(customer)
+                
+                # Barber?
+                if extracted.get("barber_name"):
+                    # Find ID
+                    found = next((b for b in barbers if b.name.lower() == extracted["barber_name"].lower()), None)
+                    if found: current_data["barber_id"] = found.id
+                
+                # Date?
+                if extracted.get("date"):
+                    current_data["date"] = extracted["date"]
+                
+                # Time?
+                if extracted.get("time"):
+                    current_data["time"] = extracted["time"]
+                
+                # Period? (Morning/Afternoon)
+                if extracted.get("time_period"):
+                    current_data["time_period"] = extracted["time_period"]
+    
+                self._update_state(customer, CustomerData.SELECT_BARBER, current_data) # Intermediate state
+    
+                # 2. Validation Flow
+                if "barber_id" not in current_data:
+                    # Ask based on LLM reply or default
+                    msg = reply if "barbero" in reply.lower() else "¿Con quién te gustaría agendar?"
+                    # Send buttons
+                    buttons = [{"id": f"barber_{b.id}", "title": b.name} for b in barbers[:3]]
+                    whatsapp_service.send_interactive_button(self.phone_number_id, from_number, msg, buttons)
+                    return
+                    
+                if "date" not in current_data:
+                    # Ask date
+                    whatsapp_service.send_message(self.phone_number_id, from_number, "Entendido. ¿Para qué fecha lo necesitas?")
+                    self._update_state(customer, CustomerData.SELECT_DATE, current_data)
+                    return
+    
+                # Check Availability with Date
+                try:
+                    target_date = datetime.datetime.strptime(current_data["date"], "%Y-%m-%d").date()
+                except ValueError:
+                    # Date parsing failed?
+                    whatsapp_service.send_message(self.phone_number_id, from_number, "La fecha no es válida. ¿Podrías decirla de nuevo? (Ej: Mañana)")
+                    return
+
+                available_slots = self._get_available_slots(current_data["barber_id"], target_date)
+                
+                # Filter by Time Period if set
+                period = current_data.get("time_period")
+                if period == "morning":
+                    available_slots = [s for s in available_slots if s.hour < 12]
+                elif period == "afternoon":
+                    available_slots = [s for s in available_slots if s.hour >= 12 and s.hour < 18]
+                elif period == "evening":
+                    available_slots = [s for s in available_slots if s.hour >= 18]
+
+                if not available_slots:
+                    msg = "Ese día no hay disponibilidad."
+                    if period: msg = f"No hay horarios disponibles en la {period.replace('morning','mañama').replace('afternoon','tarde').replace('evening','noche')} para ese día."
+                    whatsapp_service.send_message(self.phone_number_id, from_number, msg)
+                    return
+    
+                if "time" in current_data:
+                    # Verify exact slot
+                    target_h = int(current_data["time"].split(":")[0])
+                    
+                    # Loose matching (just hour)
+                    matched = next((s for s in available_slots if s.hour == target_h), None)
+                    if matched:
+                        # Success -> Confirm
+                        self._confirm_time(customer, current_data, matched.strftime("%H:%M"))
+                    else:
+                        # Slot busy -> Show options
+                         self._send_slot_menu(customer, target_date, available_slots, header=f"A las {current_data['time']} está ocupado. Mira estos horarios:")
+                else:
+                    # No time -> Show options
+                    self._send_slot_menu(customer, target_date, available_slots)
+            
+            elif intent == "CONFIRM_APPOINTMENT":
+                 if customer.conversation_state == CustomerData.CONFIRM_BOOKING:
+                      self._finalize_booking(customer)
+                 else:
+                      self._update_state(customer, customer.conversation_state, current_data) # Save history
+                      whatsapp_service.send_message(self.phone_number_id, from_number, "No hay ninguna cita pendiente de confirmar. ¿Quieres agendar una nueva?")
                  return
 
-            # SILENT MODE: Only respond to keywords
-            keywords = ["hola", "menu", "inicio", "agendar", "cita", "buenos", "buenas"]
-            if any(k in message_body.lower() for k in keywords) or interactive_id:
-                self._send_welcome_menu(customer)
             else:
-                # Do nothing (Silent)
-                print(f"Ignored non-keyword message in IDLE: {message_body}")
-                pass
+                # Fallback for UNKNOWN or other intents
+                self._update_state(customer, customer.conversation_state, current_data) # Save history
+                whatsapp_service.send_message(self.phone_number_id, from_number, reply)
+                if intent == "UNKNOWN":
+                     self._send_welcome_menu(customer)
         
-        elif state == CustomerData.SELECT_BARBER:
-            if interactive_id:
-                self._handle_barber_selection(customer, interactive_id)
-            else:
-                whatsapp_service.send_message(self.phone_number_id, from_number, "Por favor, selecciona una opción del menú de barberos.")
+        except Exception as e:
+            logger.error(f"CRITICAL ERROR handling message: {e}", exc_info=True)
+            self._update_state(customer, customer.conversation_state, current_data) # Save history (even on error if possible)
+            whatsapp_service.send_message(self.phone_number_id, from_number, "Tuve un error interno 😵‍💫. ¿Podrías intentar de nuevo o escribir 'Menu'?")
 
-        elif state == CustomerData.SELECT_DATE:
-            # Simple text input for date YYYY-MM-DD
-            self._handle_date_selection(customer, message_body)
 
-        elif state == CustomerData.SELECT_SLOT:
-            # Allow both interactivity and text
-            if interactive_id:
-                self._handle_slot_selection(customer, interactive_id)
-            else:
-                # Text input (e.g. "2pm")
-                self._handle_slot_selection(customer, message_body)
-
-        elif state == CustomerData.CONFIRM_BOOKING:
-            if interactive_id == "confirm_yes":
-                self._finalize_booking(customer)
-            else:
-                self._update_state(customer, CustomerData.IDLE, {})
-                whatsapp_service.send_message(self.phone_number_id, from_number, "Reserva cancelada.")
-
-    # --- Helpers ---
+    # --- Helpers (Stripped down) ---
     def _update_state(self, customer, new_state, data):
         customer.conversation_state = new_state
+        # Ensure we don't accidentally nest JSON strings
+        if isinstance(data, str):
+             try: data = json.loads(data)
+             except: pass
         customer.conversation_data = json.dumps(data)
         self.db.commit()
 
     def _get_data(self, customer):
-        return json.loads(customer.conversation_data)
+        try: return json.loads(customer.conversation_data)
+        except: return {}
+
+    def _get_business_hours(self, target_date):
+        start_h, end_h = 9, 18
+        if self.business.schedule:
+            try:
+                schedule = json.loads(self.business.schedule)
+                day_key = str(target_date.weekday())
+                if day_key in schedule:
+                    start_h = schedule[day_key].get("start", 9)
+                    end_h = schedule[day_key].get("end", 18)
+            except: pass
+        return start_h, end_h
 
     def _get_available_slots(self, barber_id, target_date):
         barber = self.db.query(Barber).filter(Barber.id == barber_id).first()
-        # Dynamic Business Hours
-        open_h = self.business.open_hour if self.business and self.business.open_hour is not None else 9
-        close_h = self.business.close_hour if self.business and self.business.close_hour is not None else 18
+        open_h, close_h = self._get_business_hours(target_date)
 
         day_start = datetime.datetime(target_date.year, target_date.month, target_date.day, open_h, 0, 0)
         day_end = datetime.datetime(target_date.year, target_date.month, target_date.day, close_h, 0, 0)
@@ -137,288 +329,135 @@ class ConversationService:
                 try:
                     b_start = datetime.datetime.fromisoformat(b_start_str.replace("Z", "+00:00"))
                     b_end = datetime.datetime.fromisoformat(b_end_str.replace("Z", "+00:00"))
+                    
                     slot_start_aware = current_slot.replace(tzinfo=datetime.timezone.utc)
                     slot_end_aware = slot_end.replace(tzinfo=datetime.timezone.utc)
-                    if slot_start_aware < b_end and slot_end_aware > b_start:
+                    
+                    if (slot_start_aware < b_end) and (slot_end_aware > b_start):
                         is_free = False; break
                 except: is_free = False
+            
             if is_free: available_slots.append(current_slot)
             current_slot = slot_end
         return available_slots
 
-    # --- Actions ---
-    def _send_welcome_menu(self, customer, page=0):
-        # List Barbers
-        print(f"DEBUG: Fetching barbers for business_id: {self.business.id if self.business else 'None'}")
-        barbers = self.db.query(Barber).filter(Barber.business_id == self.business.id).all()
-        print(f"DEBUG: Found {len(barbers)} barbers.")
-        
-        if not barbers:
-            print("DEBUG: No barbers found, sending apology.")
-            whatsapp_service.send_message(self.phone_number_id, customer.phone, "Lo sentimos, no hay barberos disponibles en este momento. Intenta mas tarde.")
-            return
-
-        ITEMS_PER_PAGE = 2 
+    def _send_slot_menu(self, customer, target_date, slots, page=0, header=None):
+        ITEMS_PER_PAGE = 3
         start = page * ITEMS_PER_PAGE
         end = start + ITEMS_PER_PAGE
-        current_batch = barbers[start:end]
-        print(f"DEBUG: Showing page {page}, items {start} to {end}: {current_batch}")
+        subset = slots[start:end]
         
         buttons = []
-        for b in current_batch:
-            buttons.append({"id": f"barber_{b.id}", "title": f"{b.name}"})
+        for slot in subset:
+            time_str = slot.strftime("%H:%M")
+            display_str = slot.strftime("%I:%M%p").lower().lstrip("0")
+            buttons.append({"id": f"time_{time_str}", "title": f"{display_str}"})
+            
+        msg = header if header else f"Horarios libres para el {target_date.strftime('%d/%m')}:"
+        if not buttons:
+             whatsapp_service.send_message(self.phone_number_id, customer.phone, "No hay mas horarios disponibles.")
+             return
 
-        if end < len(barbers):
-            buttons.append({"id": f"page_{page+1}", "title": "Ver mas"})
+        # Improved Date Formatting
+        days_es = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+        months_es = ["", "Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
+        day_str = days_es[target_date.weekday()]
+        month_str = months_es[target_date.month]
+        nice_date = f"{day_str} {target_date.day} de {month_str}"
 
-        msg = f"Hola {customer.name or 'amigo'}! Bienvenido a *{self.business.name}*.\n\nSoy tu asistente virtual. Con que profesional te gustaria agendar hoy?"
-        if page > 0: msg = "Aqui tienes mas profesionales disponibles:"
+        msg = header if header else f"Horarios libres para el {nice_date}:"
 
         whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
-        self._update_state(customer, CustomerData.SELECT_BARBER, {"page": page})
-
-    def _handle_reminder_action(self, customer, interactive_id):
-        # Format: rem_action_id
-        try:
-            parts = interactive_id.split("_")
-            # rem, action, id
-            action = parts[1]
-            appt_id = int(parts[2])
-        except (IndexError, ValueError):
-            print(f"Error parse reminder ID: {interactive_id}")
-            return
-
-        appt = self.db.query(Appointment).filter(Appointment.id == appt_id).first()
         
-        if not appt:
-            whatsapp_service.send_message(self.phone_number_id, customer.phone, "No encontre esa cita.")
-            return
-
-        if action == "confirm":
-             whatsapp_service.send_message(self.phone_number_id, customer.phone, "Gracias por confirmar. Nos vemos! 👋")
-        
-        elif action == "cancel":
-             appt.status = AppointmentStatus.CANCELLED
-             if appt.barber.calendar_id and appt.google_event_id:
-                 # Ideally delete from GCal too (not implemented fully yet)
-                 pass
-             self.db.commit()
-             whatsapp_service.send_message(self.phone_number_id, customer.phone, "Cita cancelada correctamente.")
-             # Notify Barber
-             if appt.barber.phone:
-                 whatsapp_service.send_message(self.phone_number_id, appt.barber.phone, f"⚠️ Cita Cancelada por Cliente:\n{customer.name} para el {appt.start_time}")
-
-        elif action == "reschedule":
-             # Cancel old
-             appt.status = AppointmentStatus.CANCELLED
-             self.db.commit()
-             whatsapp_service.send_message(self.phone_number_id, customer.phone, "Entendido, vamos a reagendar. ¿Para qué fecha la quieres ahora?")
-             # Set state to SELECT_DATE. Need to prep data.
-             # We need barber_id to continue
-             data = {"barber_id": appt.barber_id}
-             self._update_state(customer, CustomerData.SELECT_DATE, data)
+        # Pagination Logic
+        if end < len(slots):
+             # We should attach a "Next" button in a separate message or as part of the list?
+             # Interactive buttons limit is 3. We usually used 3 slots.
+             # If we want pagination, we might need to send 2 slots + 1 "Next" button, OR send a separate menu.
+             # Current code sends up to 3 slots.
+             pass 
              
-             # Notify Barber
-             if appt.barber.phone:
-                 whatsapp_service.send_message(self.phone_number_id, appt.barber.phone, f"⚠️ El cliente {customer.name} está reagendando su cita del {appt.start_time}")
-
-    def _handle_barber_selection(self, customer, interactive_id):
-        if interactive_id.startswith("page_"):
-            next_page = int(interactive_id.split("_")[1])
-            self._send_welcome_menu(customer, page=next_page)
-            return
-
-        b_id = int(interactive_id.split("_")[1])
-        data = self._get_data(customer)
-        data["barber_id"] = b_id
+        # Correction: To support pagination with WhatsApp buttons (limit 3), we need a strategy.
+        # Strategy: display 2 slots + "Ver más" if there are more.
         
-        self._update_state(customer, CustomerData.SELECT_DATE, data)
-        whatsapp_service.send_message(self.phone_number_id, customer.phone, "Excelente eleccion!\n\nPara que dia te gustaria la cita? \n\nPuedes decirme:\n- 'Hoy'\n- 'Manana'\n- 'El viernes'\n- O una fecha y hora completa: 'Manana a las 10am'")
-
-    def _handle_date_selection(self, customer, date_str):
-        clean_date_str = correct_typos(date_str)
-        print(f"DEBUG: Date processing '{date_str}' -> '{clean_date_str}'")
-        
-        settings = {'PREFER_DATES_FROM': 'future', 'RELATIVE_BASE': datetime.datetime.now(), 'DATE_ORDER': 'DMY', 'RETURN_AS_TIMEZONE_AWARE': False}
-        parsed_dt = dateparser.parse(clean_date_str, languages=['es'], settings=settings)
-        
-        if not parsed_dt:
-             whatsapp_service.send_message(self.phone_number_id, customer.phone, "🤔 No entendí bien la fecha. ¿Podrías intentar de nuevo? \nEjemplo: 'Mañana', 'Lunes' o '20/01'.")
-             return
-             
-        target_date = parsed_dt.date()
-        if target_date < datetime.date.today():
-             whatsapp_service.send_message(self.phone_number_id, customer.phone, f"La fecha {target_date} ya paso. Por favor elige una fecha futura.")
-             return
-
-        # 2. Advanced Time Logic
-        has_time = False
-        target_time = None
-        
-        # If input has time separators or keywords
-        time_keywords = [":", "am", "pm", " a las ", "alas", " de la ", "media"]
-        if any(x in clean_date_str.lower() for x in time_keywords):
-             # Trust parser or re-parse only time if dateparser failed to catch time
-             if parsed_dt.time() != datetime.time(0,0):
-                 target_time = parsed_dt.time()
-                 has_time = True
-             else:
-                 # Fallback: Try parsing just the string as time
-                 # Sometimes "Hoy a las 2pm" parses date correctly but time as 00:00
-                 # Let's try parsing just the time part? 
-                 # dateparser is usually good. Let's force it to be smarter.
-                 # Let's try parsing with 'PREFER_DAY_OF_MONTH' = 'current'
-                 pass
-
-        # Availability Check
-        data = self._get_data(customer)
-        available_slots = self._get_available_slots(data["barber_id"], target_date)
-
-        if not available_slots:
-             barber = self.db.query(Barber).filter(Barber.id == data["barber_id"]).first()
-             whatsapp_service.send_message(self.phone_number_id, customer.phone, f"Lo siento, {barber.name} tiene la agenda llena el {target_date}. Podrias probar otro dia?")
-             return
-
-        if has_time:
-            # Flexible Match (Hour only)
-            user_hour = target_time.hour
-            matched_slot = None
-            for slot in available_slots:
-                if slot.hour == user_hour:
-                    matched_slot = slot; break
-            
-            if matched_slot:
-                time_str = matched_slot.strftime("%H:%M")
-                data["date"] = target_date.strftime("%Y-%m-%d")
-                data["time"] = time_str
-                self._update_state(customer, CustomerData.CONFIRM_BOOKING, data)
-                barber = self.db.query(Barber).filter(Barber.id == data["barber_id"]).first()
-                msg = f"Perfecto! Encontre disponibilidad.\n\n*Confirmar Cita:*\nPro: {barber.name}\nDia: {data['date']}\nHora: {time_str}\n\nAgendamos?"
-                buttons = [{"id": "confirm_yes", "title": "Si, agendar"}, {"id": "confirm_no", "title": "Cancelar"}]
-                whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
-                return
-            else:
-                 whatsapp_service.send_message(self.phone_number_id, customer.phone, f"Uff, a las {target_time.strftime('%H:%M')} no se puede. Pero mira lo que tengo libre:")
-        
-        self._send_slot_menu(customer, target_date, available_slots, page=0)
-        data["date"] = target_date.strftime("%Y-%m-%d")
-        self._update_state(customer, CustomerData.SELECT_SLOT, data)
-
-    def _send_slot_menu(self, customer, target_date, slots, page=0):
-        print(f"DEBUG: _send_slot_menu | Page: {page} | Total Slots: {len(slots)}")
-        
-        ITEMS_PER_PAGE = 2
-        start = page * ITEMS_PER_PAGE
-        end = start + ITEMS_PER_PAGE
-        print(f"DEBUG: Indices {start} to {end}")
-        
+        # Let's re-do the list slice for pagination support
         buttons = []
-        subset = slots[start:end]
-        print(f"DEBUG: Subset size: {len(subset)}")
+        
+        # Check if we need pagination (more items than page size)
+        # We can show 3 items if that's all. If more, show 2 + Next.
+        remaining = len(slots) - start
+        
+        limit = 3
+        if remaining > 3:
+            limit = 2
+            
+        subset = slots[start : start + limit]
         
         for slot in subset:
             time_str = slot.strftime("%H:%M")
-            buttons.append({"id": f"time_{time_str}", "title": f"{time_str}"})
+            display_str = slot.strftime("%I:%M%p").lower().lstrip("0")
+            buttons.append({"id": f"time_{time_str}", "title": f"{display_str}"})
             
-        if end < len(slots):
-            print("DEBUG: Adding Next Button")
-            buttons.append({"id": f"slotpage_{page+1}", "title": "Mas horas"})
-            
-        msg = f"Horarios libres para el {target_date}:\nSelecciona una hora:"
-        if page > 0: msg = "Mas horarios disponibles:"
-        
-        if not buttons:
-             print("ERROR: No buttons generated! sending error text.")
-             whatsapp_service.send_message(self.phone_number_id, customer.phone, "Error tecnico: No pude mostrar los horarios. Intenta 'hoy' o 'manana'.")
-             return
-
+        if remaining > 3:
+             buttons.append({"id": f"page_{page+1}", "title": "Ver más ⬇️"})
+             
         whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
+        
+        # Save state so pagination works if added later
+        data = self._get_data(customer); data["date"] = target_date.strftime("%Y-%m-%d"); data["barber_id"]=data.get("barber_id")
+        self._update_state(customer, CustomerData.SELECT_SLOT, data)
 
     def _handle_slot_selection(self, customer, input_data):
-        print(f"DEBUG: _handle_slot_selection input: {input_data}")
-        # Determine if input is text or interactive_id
-        data = self._get_data(customer)
-        target_date = datetime.datetime.strptime(data["date"], "%Y-%m-%d").date()
-        
-        # 1. Pagination Check
-        if isinstance(input_data, str) and input_data.startswith("slotpage_"):
-            page = int(input_data.split("_")[1])
-            print(f"DEBUG: Handle Slot Page {page}")
-            # Ensure we fetch slots again
-            available_slots = self._get_available_slots(data["barber_id"], target_date)
-            print(f"DEBUG: Refetched {len(available_slots)} slots for pagination")
-            self._send_slot_menu(customer, target_date, available_slots, page=page)
-            return
-
-        # 2. Time Selection (Button)
-        if isinstance(input_data, str) and input_data.startswith("time_"):
-            t_str = input_data.split("_")[1]
-            self._confirm_time(customer, data, t_str)
-            return
-            
-        # 3. Text Input (e.g. "2pm", "14:00")
-        # Parse ONLY time. We prepend a dummy date to ensure time parsing works
-        dummy_date = f"{data['date']} {input_data}"
-        # Force Spanish to avoid AM/PM confusion if any
-        parsed = dateparser.parse(dummy_date, languages=['es'])
-        
-        if not parsed:
-             whatsapp_service.send_message(self.phone_number_id, customer.phone, "🤔 No entendí la hora. Selecciona una opción o escribe '2pm'.")
-             return
-             
-        # Check against available slots
-        available_slots = self._get_available_slots(data["barber_id"], target_date)
-        user_hour = parsed.time().hour
-        
-        matched_slot = None
-        for slot in available_slots:
-            if slot.hour == user_hour:
-                matched_slot = slot; break
+        # Fallback for button clicks
+        if isinstance(input_data, str):
+            if input_data.startswith("time_"):
+                parts = input_data.split("_")
+                time_str = parts[1]
+                data = self._get_data(customer)
+                self._confirm_time(customer, data, time_str)
+            elif input_data.startswith("page_"):
+                # Handle Pagination
+                page = int(input_data.split("_")[1])
+                data = self._get_data(customer)
+                # Re-fetch slots? Ideally we persist the available slots or re-fetch.
+                # Re-fetching is safer/stateless.
+                # We need date and barber from data.
+                target_date = datetime.datetime.strptime(data["date"], "%Y-%m-%d").date()
+                barber_id = data.get("barber_id")
+                # Need to apply same filters (period)?
+                # Simplification: just re-fetch all for day. 
+                # (Refining: if we filtered by period, we lose that state unless saved. 
+                #  Let's persist 'time_period' in data so we can re-filter)
                 
-        if matched_slot:
-             self._confirm_time(customer, data, matched_slot.strftime("%H:%M"))
-        else:
-             whatsapp_service.send_message(self.phone_number_id, customer.phone, f"⚠️ A las {parsed.strftime('%H:%M')} no está disponible.")
-
-        # 2. Time Selection (Button)
-        if isinstance(input_data, str) and input_data.startswith("time_"):
-            t_str = input_data.split("_")[1]
-            self._confirm_time(customer, data, t_str)
-            return
-            
-        # 3. Text Input (e.g. "2pm", "14:00")
-        # Parse ONLY time. We prepend a dummy date to ensure time parsing works
-        dummy_date = f"{data['date']} {input_data}"
-        parsed = dateparser.parse(dummy_date)
-        
-        if not parsed:
-             whatsapp_service.send_message(self.phone_number_id, customer.phone, "🤔 No entendí la hora. Selecciona una opción o escribe '2pm'.")
-             return
-             
-        # Check against available slots
-        available_slots = self._get_available_slots(data["barber_id"], target_date)
-        user_hour = parsed.time().hour
-        
-        matched_slot = None
-        for slot in available_slots:
-            if slot.hour == user_hour:
-                matched_slot = slot; break
+                available_slots = self._get_available_slots(barber_id, target_date)
                 
-        if matched_slot:
-             self._confirm_time(customer, data, matched_slot.strftime("%H:%M"))
-        else:
-             whatsapp_service.send_message(self.phone_number_id, customer.phone, f"⚠️ A las {parsed.strftime('%H:%M')} no está disponible.")
+                # Re-filter 
+                period = data.get("time_period")
+                if period == "morning":
+                    available_slots = [s for s in available_slots if s.hour < 12]
+                elif period == "afternoon":
+                    available_slots = [s for s in available_slots if s.hour >= 12 and s.hour < 18]
+                elif period == "evening":
+                    available_slots = [s for s in available_slots if s.hour >= 18]
+
+                self._send_slot_menu(customer, target_date, available_slots, page=page)
 
     def _confirm_time(self, customer, data, time_str):
         data["time"] = time_str
         self._update_state(customer, CustomerData.CONFIRM_BOOKING, data)
         barber = self.db.query(Barber).filter(Barber.id == data["barber_id"]).first()
-        msg = f"*Confirma tu cita:*\n\nPro: {barber.name}\nDia: {data['date']}\nHora: {time_str}\n\nTe parece bien?"
+        
+        dt_obj = datetime.datetime.strptime(time_str, "%H:%M")
+        display_time = dt_obj.strftime("%I:%M %p").lstrip("0")
+        
+        msg = f"*Confirma tu cita:*\n\nPro: {barber.name}\nDia: {data['date']}\nHora: {display_time}\n\nTe parece bien?"
         buttons = [{"id": "confirm_yes", "title": "Si, confirmar"}, {"id": "confirm_no", "title": "Cancelar"}]
         whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
 
     def _finalize_booking(self, customer):
         data = self._get_data(customer)
+        if "barber_id" not in data: return
+        
         barber = self.db.query(Barber).filter(Barber.id == data["barber_id"]).first()
         
         date_parts = list(map(int, data["date"].split("-")))
@@ -433,7 +472,71 @@ class ConversationService:
 
         new_appointment = Appointment(customer_id=customer.id, barber_id=barber.id, start_time=start_time, end_time=end_time, status="confirmed", google_event_id="dual_created")
         self.db.add(new_appointment)
+        
+        display_time = start_time.strftime("%I:%M %p").lstrip("0")
+        
         self._update_state(customer, CustomerData.IDLE, {})
-        whatsapp_service.send_message(self.phone_number_id, customer.phone, f"Cita Confirmada con {barber.name} el {data['date']} a las {data['time']}!")
-        # End of flow. State is IDLE. System stays silent until next keyword.
+        whatsapp_service.send_message(self.phone_number_id, customer.phone, f"✅ Cita Confirmada con {barber.name} el {data['date']} a las {display_time}!")
 
+    def _send_welcome_menu(self, customer, page=0):
+        barbers = self.db.query(Barber).filter(Barber.business_id == self.business.id).all()
+        if not barbers:
+            whatsapp_service.send_message(self.phone_number_id, customer.phone, "Lo sentimos, no hay barberos disponibles.")
+            return
+
+        ITEMS_PER_PAGE = 2 
+        start = page * ITEMS_PER_PAGE
+        end = start + ITEMS_PER_PAGE
+        current_batch = barbers[start:end]
+        
+        buttons = []
+        for b in current_batch:
+            buttons.append({"id": f"barber_{b.id}", "title": f"{b.name}"})
+
+        msg = f"Hola {customer.name or 'amigo'}! Bienvenido a *{self.business.name}*.\n\nSoy tu asistente virtual. ¿Con qué profesional te gustaría agendar hoy?"
+        whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
+        self._update_state(customer, CustomerData.SELECT_BARBER, {"page": page})
+
+    def _handle_barber_selection(self, customer, interactive_id):
+        if interactive_id.startswith("page_"):
+            next_page = int(interactive_id.split("_")[1])
+            self._send_welcome_menu(customer, page=next_page)
+            return
+
+        b_id = int(interactive_id.split("_")[1])
+        data = self._get_data(customer)
+        data["barber_id"] = b_id
+        
+        self._update_state(customer, CustomerData.SELECT_DATE, data)
+        barber = self.db.query(Barber).filter(Barber.id == b_id).first()
+        
+        msg = f"Has elegido a *{barber.name}*. Excelente!\n\n¿Para qué día te gustaría la cita?"
+        buttons = [
+            {"id": "date_today", "title": "Hoy"},
+            {"id": "date_tomorrow", "title": "Mañana"},
+            {"id": "date_other", "title": "Otra fecha"}
+        ]
+        whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
+
+    def _handle_date_selection(self, customer, date_str):
+        clean_date_str = str(date_str)
+        # Assuming simple mapping for now since it's button driven usually
+        target_date = datetime.date.today()
+        if "manana" in clean_date_str or "mañana" in clean_date_str:
+            target_date = target_date + datetime.timedelta(days=1)
+            
+        # For now, just show slots for that date
+        data = self._get_data(customer)
+        if "barber_id" not in data:
+             self._update_state(customer, CustomerData.IDLE, {})
+             self._send_welcome_menu(customer)
+             return
+
+        available_slots = self._get_available_slots(data["barber_id"], target_date)
+        if not available_slots:
+             whatsapp_service.send_message(self.phone_number_id, customer.phone, "Ese dia no hay disponibilidad.")
+             return
+
+        self._send_slot_menu(customer, target_date, available_slots)
+        data["date"] = target_date.strftime("%Y-%m-%d")
+        self._update_state(customer, CustomerData.SELECT_SLOT, data)

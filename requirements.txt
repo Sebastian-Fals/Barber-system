@@ -14,3 +14,5 @@ requests
 dateparser
 pyspellchecker
 apscheduler
+fuzzywuzzy
+google-genai

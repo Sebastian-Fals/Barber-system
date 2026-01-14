@@ -18,9 +18,11 @@ class Business(Base):
     phone_number_id = Column(String, unique=True, index=True, nullable=False)
     calendar_id = Column(String, nullable=True, comment="Master calendar for the business")
     
-    # Hours (24h format integer)
+    # Hours (24h format integer) - DEPRECATED in favor of schedule, kept for backwards compat
     open_hour = Column(Integer, default=9)
     close_hour = Column(Integer, default=18)
+    # JSON String: {"0": {"start": 9, "end": 18}, "1": ...} Where 0=Monday, 6=Sunday
+    schedule = Column(String, default="{}")
     
     # Relationships
     barbers = relationship("Barber", back_populates="business")

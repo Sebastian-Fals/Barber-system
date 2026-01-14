@@ -24,7 +24,7 @@ class WhatsAppService:
         }
 
         try:
-            response = requests.post(url, headers=headers, json=data)
+            response = requests.post(url, headers=headers, json=data, timeout=15)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:

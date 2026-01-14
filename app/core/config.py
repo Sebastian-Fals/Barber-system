@@ -12,8 +12,8 @@ class Settings(BaseSettings):
     WHATSAPP_VERIFY_TOKEN: str
     
     # Google
-    # Google
     GOOGLE_APPLICATION_CREDENTIALS: str
+    GOOGLE_API_KEY: Optional[str] = None
     
     # App Settings
     TIMEZONE: str = "America/Bogota"
