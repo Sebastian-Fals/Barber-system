@@ -1,6 +1,6 @@
 # 🗄️ Estructura de Base de Datos
 
-El proyecto utiliza **SQLite** como base de datos relacional y **SQLAlchemy** como ORM (Object Relational Mapper) para manipular los datos desde Python.
+El proyecto utiliza **PostgreSQL** (vía Neon.tech) como base de datos relacional y **SQLAlchemy** como ORM (Object Relational Mapper) para manipular los datos desde Python.
 
 ## 🗺️ Diagrama Entidad-Relación (ERD)
 

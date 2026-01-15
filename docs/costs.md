@@ -56,6 +56,15 @@ El software debe ejecutarse en algún lugar.
 
 ---
 
+## 4. Base de Datos
+
+| Servicio | Descripción | Costo Estimado |
+| :--- | :--- | :--- |
+| **Neon Tech** | Postgres Serverless (Capa Gratuita). | **$0** (Hasta 0.5GB almacenamiento) |
+| **Render Postgres** | Postgres en Render. | ~$7 USD/mes (Capa más baja) |
+
+---
+
 ## 🏁 Resumen Total
 
 Para operar el sistema en su estado actual (PC Local):
