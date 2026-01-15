@@ -337,7 +337,7 @@ class ConversationService:
             return
 
         slots = self.booking_service.get_available_slots(data["barber_id"], target_date)
-        if data.get("time_period"):
+        if data.get("time_period") and not data.get("time"):
             slots = self.booking_service.filter_slots_by_period(slots, data["time_period"])
 
         if not slots:

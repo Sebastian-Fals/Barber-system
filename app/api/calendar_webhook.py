@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, Header, HTTPException, Depends
+from fastapi import APIRouter, Request, Header, HTTPException, Depends, BackgroundTasks
 from app.core.config import settings
 from app.core.logging_config import logger
 from app.services.calendar_service import calendar_service
@@ -11,6 +11,7 @@ router = APIRouter()
 @router.post("/google-webhook")
 async def google_calendar_webhook(
     request: Request,
+    background_tasks: BackgroundTasks,
     x_goog_channel_id: str = Header(None),
     x_goog_resource_state: str = Header(None),
     x_goog_resource_id: str = Header(None),
@@ -60,13 +61,10 @@ async def google_calendar_webhook(
                 logger.warning(f"Error decoding calendar ID from channel: {e}")
             
         if calendar_id:
-            logger.info(f"Syncing Calendar events for: {calendar_id}")
-            # Ensure we pass the db session correctly
-            calendar_service.sync_events(calendar_id, db)
+            logger.info(f"Syncing Calendar events for: {calendar_id} (Background)")
+            # Pass None for db so it creates its own session in the background thread
+            background_tasks.add_task(calendar_service.sync_events, calendar_id, None)
         else:
             logger.warning(f"Could not parse Calendar ID from Channel: {x_goog_channel_id}")
-            # Fallback: Sync ALL active calendars (Inefficient but safe)
-            # from app.models.models import Business, Barber
-            # ... iterate and sync ...
             
     return {"status": "ok"}

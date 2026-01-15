@@ -11,9 +11,9 @@ from sqlalchemy.pool import NullPool
 
 engine_kwargs = {
     "connect_args": connect_args,
-    "connect_args": connect_args,
     "pool_recycle": 300, # Recycle every 5 minutes (safer for Neon/Serverless)
     "pool_pre_ping": True # Critical: Test connection before use to catch closed SSL sockets
+}
 
 if "sqlite" in settings.DATABASE_URL:
     engine_kwargs["poolclass"] = NullPool

@@ -4,6 +4,8 @@ from app.services.calendar_service import calendar_service
 import datetime
 import json
 from app.core.logging_config import logger
+import pytz
+from app.core.config import settings
 
 class BookingService:
     def __init__(self, db: Session):
@@ -40,20 +42,40 @@ class BookingService:
 
         available_slots = []
         current_slot = day_start
+        
+        # Get current time (naive local, since day_start/end are naive)
+        now = datetime.datetime.now()
+
         while current_slot < day_end:
             slot_end = current_slot + datetime.timedelta(hours=1)
+            
+            # 1. Skip past slots if target_date is today
+            if current_slot < now:
+                current_slot = slot_end
+                continue
+
             is_free = True
             for b_start_str, b_end_str in busy_intervals:
                 try:
-                    b_start = datetime.datetime.fromisoformat(b_start_str.replace("Z", "+00:00"))
-                    b_end = datetime.datetime.fromisoformat(b_end_str.replace("Z", "+00:00"))
+                    # Clean Zulu time if present
+                    s_str = b_start_str.replace("Z", "+00:00")
+                    e_str = b_end_str.replace("Z", "+00:00")
                     
-                    slot_start_aware = current_slot.replace(tzinfo=datetime.timezone.utc)
-                    slot_end_aware = slot_end.replace(tzinfo=datetime.timezone.utc)
+                    b_start = datetime.datetime.fromisoformat(s_str)
+                    b_end = datetime.datetime.fromisoformat(e_str)
                     
-                    if (slot_start_aware < b_end) and (slot_end_aware > b_start):
+                    # If Google returned Aware time, convert to Bogota Local (Naive)
+                    if b_start.tzinfo is not None:
+                        tz = pytz.timezone(settings.TIMEZONE)
+                        b_start = b_start.astimezone(tz).replace(tzinfo=None)
+                        b_end = b_end.astimezone(tz).replace(tzinfo=None)
+                    
+                    # Now compare Naive vs Naive
+                    if (current_slot < b_end) and (slot_end > b_start):
                         is_free = False; break
-                except: is_free = False
+                except Exception as e:
+                    logger.error(f"Error parsing slot: {e}") 
+                    is_free = False
             
             if is_free: available_slots.append(current_slot)
             current_slot = slot_end

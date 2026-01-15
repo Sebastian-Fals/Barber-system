@@ -4,6 +4,9 @@ from sqlalchemy.orm import Session
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from app.core.config import settings
+import pytz
+
+import threading
 
 class CalendarService:
     SCOPES = ['https://www.googleapis.com/auth/calendar']
@@ -11,6 +14,7 @@ class CalendarService:
     def __init__(self):
         self.creds = None
         self.service = None
+        self.lock = threading.Lock()
         self._authenticate()
 
     def _authenticate(self):
@@ -43,7 +47,8 @@ class CalendarService:
         }
 
         try:
-            event = self.service.events().insert(calendarId=calendar_id, body=event).execute()
+            with self.lock:
+                event = self.service.events().insert(calendarId=calendar_id, body=event).execute()
             print(f"Event created: {event.get('htmlLink')}")
             return event.get('id')
         except Exception as e:
@@ -59,14 +64,24 @@ class CalendarService:
             return []
 
         try:
+            # Ensure filtering respects the configured timezone
+            tz = pytz.timezone(settings.TIMEZONE)
+            
+            # If naive, assume local/target timezone
+            if start_time.tzinfo is None:
+                start_time = tz.localize(start_time)
+            if end_time.tzinfo is None:
+                end_time = tz.localize(end_time)
+
             print(f"Checking gcal for {calendar_id} from {start_time} to {end_time}")
-            events_result = self.service.events().list(
-                calendarId=calendar_id,
-                timeMin=start_time.isoformat() + 'Z',
-                timeMax=end_time.isoformat() + 'Z',
-                singleEvents=True,
-                orderBy='startTime'
-            ).execute()
+            with self.lock:
+                events_result = self.service.events().list(
+                    calendarId=calendar_id,
+                    timeMin=start_time.isoformat(),
+                    timeMax=end_time.isoformat(),
+                    singleEvents=True,
+                    orderBy='startTime'
+                ).execute()
             
             items = events_result.get('items', [])
             busy_slots = []
@@ -122,47 +137,65 @@ class CalendarService:
         # Ideally caller handles DB session, or we create local if not provided.
         # But this service is usually instantiated globally. 
         # For the webhook handler, we will pass the DB session.
+        # If no DB session provided, verify if we can create one
+        should_close_db = False
         if not db:
-            print("Error: DB Session required for sync")
-            return
+            from app.core.database import SessionLocal
+            db = SessionLocal()
+            should_close_db = True
 
         from app.models.models import Appointment, AppointmentStatus
 
-        # Look back 24 hours to catch recent updates
-        time_min = (datetime.datetime.utcnow() - datetime.timedelta(hours=24)).isoformat() + 'Z'
+        # Look back 24 hours (Local Time Aware)
+        tz = pytz.timezone(settings.TIMEZONE)
+        now = datetime.datetime.now(tz)
+        time_min = (now - datetime.timedelta(hours=24)).isoformat()
         
         try:
             print(f"Syncing events for {calendar_id} since {time_min}")
-            events_result = self.service.events().list(
-                calendarId=calendar_id,
-                timeMin=time_min,
-                singleEvents=True,
-                showDeleted=True, # Important to catch cancellations
-                orderBy='updated'
-            ).execute()
+            with self.lock:
+                events_result = self.service.events().list(
+                    calendarId=calendar_id,
+                    timeMin=time_min,
+                    singleEvents=True,
+                    showDeleted=True, # Important to catch cancellations
+                    orderBy='updated'
+                ).execute()
             
             items = events_result.get('items', [])
+            print(f"Sync: Found {len(items)} events modified in the last 24h")
             
+            cancelled_ids = []
             for event in items:
                 g_id = event.get('id')
                 status = event.get('status') # confirmed, tentative, cancelled
                 
-                if status == 'cancelled':
-                    # Find appointment in DB
-                    appt = db.query(Appointment).filter(
-                        Appointment.google_event_id == g_id,
-                        Appointment.status == AppointmentStatus.CONFIRMED
-                    ).first()
-                    
-                    if appt:
-                        print(f"Sync: Found cancelled event {g_id}. Cancelling local appointment {appt.id}")
+                if status == 'cancelled' and g_id:
+                    cancelled_ids.append(g_id)
+            
+            if cancelled_ids:
+                # Bulk Update
+                # Fetch appointments that exist and are confirmed
+                appts_to_cancel = db.query(Appointment).filter(
+                    Appointment.google_event_id.in_(cancelled_ids),
+                    Appointment.status == AppointmentStatus.CONFIRMED
+                ).all()
+                
+                if appts_to_cancel:
+                    print(f"Sync: Bulk Cancelling {len(appts_to_cancel)} appointments")
+                    for appt in appts_to_cancel:
                         appt.status = AppointmentStatus.CANCELLED
-                        db.commit()
-                        
-                        # Notify Customer? (Optional: could be added here)
-                        # whatsapp_service.send_message(..., "Tu cita fue cancelada...")
+                        print(f" - Cancelled Appt ID {appt.id} (GID: {appt.google_event_id})")
+                    db.commit()
+                else:
+                    print("Sync: No matching local appointments to cancel.")
+            else:
+                print("Sync: No cancelled events found.")
                         
         except Exception as e:
             print(f"Error syncing events: {e}")
+        finally:
+            if should_close_db:
+                db.close()
 
 calendar_service = CalendarService()
