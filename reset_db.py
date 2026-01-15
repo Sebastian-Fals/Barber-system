@@ -16,6 +16,7 @@ print("🌱 Seeding Business...")
 business = Business(
     name="PeluqueriaSebastian",
     phone_number_id="86196104034",
+    phone="3001234567",
     calendar_id="sebastian.fals.lopez@gmail.com",
     ai_enabled=True,
     schedule='{"0": {"start": 9, "end": 18}, "1": {"start": 9, "end": 18}, "2": {"start": 9, "end": 18}, "3": {"start": 9, "end": 18}, "4": {"start": 9, "end": 18}, "5": {"start": 9, "end": 18}}'

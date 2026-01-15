@@ -79,17 +79,41 @@ class BookingService:
         end_time = start_time + datetime.timedelta(hours=1)
         summary = f"Cita: {customer.name} - {customer.phone}"
         
-        # Calendar Sync
+        business = self.db.query(Business).filter(Business.id == barber.business_id).first()
+        if not business:
+            logger.error(f"Barber {barber.id} has no associated business")
+            return None
+
+        # 1. Validate Business Hours
+        start_h, end_h = self.get_business_hours(business, start_time.date())
+        if start_time.hour < start_h or start_time.hour >= end_h:
+             logger.warning(f"Attempt to book outside business hours: {start_time}")
+             return None # Or raise specific error
+
+        # 2. Validate Availability (Double Check)
+        # Note: robust systems check DB overlap here too, not just Google Calendar
+        # For this MVP, we rely on the caller checking, but adding a DB check is safer.
+        existing = self.db.query(Appointment).filter(
+            Appointment.barber_id == barber_id,
+            Appointment.status == AppointmentStatus.CONFIRMED,
+            Appointment.start_time < end_time,
+            Appointment.end_time > start_time
+        ).first()
+        if existing:
+            logger.warning(f"Slot overlapping with local appointment {existing.id}")
+            return None
+
+        # 3. Calendar Sync
         google_event_id = None
         if barber.calendar_id: 
             try:
-                event = calendar_service.create_event(barber.calendar_id, summary, start_time, end_time)
-                if event: google_event_id = event.get("id")
+                # Returns ID string or None
+                g_id_result = calendar_service.create_event(barber.calendar_id, summary, start_time, end_time)
+                if g_id_result: google_event_id = g_id_result
             except Exception as e:
                 logger.error(f"Error creating barber calendar event: {e}")
             
-        business = self.db.query(Business).filter(Business.id == barber.business_id).first()
-        if business and business.calendar_id: 
+        if business.calendar_id: 
             try:
                 calendar_service.create_event(business.calendar_id, f"[{barber.name}] {summary}", start_time, end_time)
             except Exception as e:

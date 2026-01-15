@@ -17,6 +17,30 @@ class ConversationService:
         self.booking_service = BookingService(db)
         self.flow_manager = FlowManager(db)
 
+    def _parse_time_input(self, text: str) -> int:
+        """Parses text like '5pm', '17:00', '5' into an integer hour (0-23). Returns -1 if invalid."""
+        raw_time = text.lower().strip()
+        target_h = -1
+        
+        if "pm" in raw_time:
+            try:
+                h = int(raw_time.replace("pm", "").strip().split(":")[0])
+                if h != 12: target_h = h + 12
+                else: target_h = 12
+            except: pass
+        elif "am" in raw_time:
+            try:
+                h = int(raw_time.replace("am", "").strip().split(":")[0])
+                if h == 12: target_h = 0
+                else: target_h = h
+            except: pass
+        else:
+            try:
+                target_h = int(raw_time.split(":")[0])
+            except: pass
+            
+        return target_h
+
     def handle_incoming_message(self, from_number: str, message_body: str, message_type: str = "text", interactive_id: str = None):
         if not self.business: 
             logger.error(f"No business found for phone_number_id: {self.phone_number_id}")
@@ -58,11 +82,30 @@ class ConversationService:
         # Logic Gate: AI Enabled check
         ai_enabled = self.business.ai_enabled if hasattr(self.business, 'ai_enabled') else True
         
-        # If AI is disabled, we force valid keywords or Show Menu helper
+        # If AI is disabled, we force valid keywords or explicit state handling
         if not ai_enabled:
              if is_keyword:
                  self.flow_manager.update_state(customer, CustomerData.IDLE, {})
                  self._send_welcome_menu(customer)
+             elif customer.conversation_state == CustomerData.SELECT_SLOT:
+                 # HEURISTIC: Support manual time entry even if AI is off
+                 h = self._parse_time_input(message_body)
+                 if h >= 0:
+                     # Treat like a booking attempt
+                     # We reuse _process_booking_intent logic by synthesising data?
+                     # No, cleaner to call a specific method or adapt _process_booking_intent
+                     # Let's adapt _process_booking_intent to be usable here?
+                     # Actually, _process_booking_intent takes "extracted" and "data".
+                     
+                     current_data = self.flow_manager.get_data(customer)
+                     current_data["time"] = message_body
+                     # Manually trigger the slot logic
+                     self.flow_manager.update_state(customer, CustomerData.SELECT_BARBER, current_data) # Reset to force validation flow?
+                     # No, directly call logic or simulate intent
+                     # Let's call a simplified version of what _process_booking_intent does for time
+                     self._handle_manual_time_input(customer, current_data, message_body)
+                 else:
+                     self._send_deterministic_fallback(customer)
              else:
                  # Fallback for Deterministic Mode
                  self._send_deterministic_fallback(customer)
@@ -88,11 +131,29 @@ class ConversationService:
         history.append({"role": "user", "content": message_body})
         if len(history) > 10: history = history[-10:]
 
+        # Helper to format schedule
+        schedule_str = "Consultar disponibilidad."
+        if hasattr(self.business, 'schedule') and self.business.schedule:
+             try:
+                 sched_json = json.loads(self.business.schedule)
+                 # Summarize? e.g. "Lunes a Viernes: 9-18" or list all.
+                 # Let's list active days for the AI
+                 lines = []
+                 day_map = {0: "Lunes", 1: "Martes", 2: "Miercoles", 3: "Jueves", 4: "Viernes", 5: "Sabado", 6: "Domingo"}
+                 for d_key, hours in sched_json.items():
+                     d_name = day_map.get(int(d_key), "")
+                     start = hours.get("start")
+                     end = hours.get("end")
+                     lines.append(f"{d_name}: {start}-{end}")
+                 schedule_str = ", ".join(lines)
+             except: pass
+
         context = {
             "current_state": customer.conversation_state,
             "business_name": self.business.name,
             "today": today.strftime("%Y-%m-%d"),
             "day_name": days_es[today.weekday()],
+            "schedule": schedule_str,
             "barbers": barber_names,
             "history": history
         }
@@ -137,8 +198,8 @@ class ConversationService:
         if interactive_id == "menu_info":
             info_msg = (
                 f"ℹ️ *Información de {self.business.name}*\n\n"
-                "📍 Dirección: Calle Falsa 123\n"
-                "📞 Teléfono: +57 300 123 4567\n"
+                f"📍 Dirección: Calle Falsa 123\n"
+                f"📞 Teléfono: {self.business.phone}\n"
                 "⏰ Horario: Lunes a Sábado, 9am - 8pm"
             )
             whatsapp_service.send_message(self.phone_number_id, from_number, info_msg)
@@ -285,17 +346,23 @@ class ConversationService:
 
         if "time" in data:
             # Clear period if specific time is given to avoid conflict
+            # Clear period if specific time is given to avoid conflict
             if data.get("time_period"): 
                 del data["time_period"]
                 
-            target_h = int(data["time"].split(":")[0])
+            raw_time = data["time"].lower()
+            target_h = 0
+            
+            if data.get("time_period"): 
+                del data["time_period"]
+                
+            target_h = self._parse_time_input(data["time"])
             matched = next((s for s in slots if s.hour == target_h), None)
             
             if matched:
                 self._confirm_time(customer, data, matched.strftime("%H:%M"))
             else:
-                 # Find closest slots
-                 self._send_slot_menu(customer, target_date, slots, header=f"⚠️ A las {target_h}:00 ya está ocupado. Te sugiero estos horarios:")
+                 self._send_slot_menu(customer, target_date, slots, header=f"⚠️ A las {target_h}:00 no hay espacio o estamos cerrados.")
         else:
             self._send_slot_menu(customer, target_date, slots)
 
@@ -325,7 +392,7 @@ class ConversationService:
         appts = self.db.query(Appointment).filter(
              Appointment.customer_id == customer.id, 
              Appointment.status == AppointmentStatus.CONFIRMED,
-             Appointment.start_time > datetime.datetime.utcnow()
+             Appointment.start_time > datetime.datetime.now()
         ).order_by(Appointment.start_time.asc()).all()
         
         if not appts:
@@ -426,6 +493,29 @@ class ConversationService:
             slots = self.booking_service.filter_slots_by_period(slots, data["time_period"])
             
         self._send_slot_menu(customer, target_date, slots, page=page)
+
+    def _handle_manual_time_input(self, customer, data, raw_text):
+        """Processes manual time link '5pm' for deterministic flow."""
+        target_h = self._parse_time_input(raw_text)
+        
+        # Need date and barber
+        if "barber_id" not in data or "date" not in data:
+            self._send_welcome_menu(customer)
+            return
+
+        try:
+            target_date = datetime.datetime.strptime(data["date"], "%Y-%m-%d").date()
+        except:
+             self._send_welcome_menu(customer)
+             return
+             
+        slots = self.booking_service.get_available_slots(data["barber_id"], target_date)
+        matched = next((s for s in slots if s.hour == target_h), None)
+            
+        if matched:
+            self._confirm_time(customer, data, matched.strftime("%H:%M"))
+        else:
+             self._send_slot_menu(customer, target_date, slots, header=f"⚠️ A las {target_h}:00 no hay espacio o estamos cerrados.")
 
     def _confirm_time(self, customer, data, time_str):
         data["time"] = time_str

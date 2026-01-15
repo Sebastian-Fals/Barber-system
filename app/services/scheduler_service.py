@@ -18,9 +18,9 @@ def check_upcoming_appointments():
         now = datetime.datetime.now()
         
         # 1. Check 24 Hour Reminders
-        # Window: 23.5h to 24.5h from now (loose check to catch them)
-        start_win_24 = now + datetime.timedelta(hours=23, minutes=30)
-        end_win_24 = now + datetime.timedelta(hours=24, minutes=30)
+        # Window: 23h to 25h from now (2 hour window to catch everything safely)
+        start_win_24 = now + datetime.timedelta(hours=23)
+        end_win_24 = now + datetime.timedelta(hours=25)
         
         # Appointments in this window that are CONFIRMED and NOT reminded
         upcoming_24 = db.query(Appointment).filter(
@@ -36,9 +36,9 @@ def check_upcoming_appointments():
             db.commit()
             
         # 2. Check 1 Hour Reminders
-        # Window: 55m to 65m from now
-        start_win_1 = now + datetime.timedelta(minutes=55)
-        end_win_1 = now + datetime.timedelta(minutes=65)
+        # Window: 45m to 75m from now (30 min window for robustness)
+        start_win_1 = now + datetime.timedelta(minutes=45)
+        end_win_1 = now + datetime.timedelta(minutes=75)
 
         upcoming_1 = db.query(Appointment).filter(
             Appointment.status == AppointmentStatus.CONFIRMED,

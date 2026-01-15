@@ -7,12 +7,28 @@ from app.core.config import settings
 # For Postgres, remove connect_args
 connect_args = {"check_same_thread": False} if "sqlite" in settings.DATABASE_URL else {}
 
+from sqlalchemy.pool import NullPool
+
+engine_kwargs = {
+    "connect_args": connect_args,
+    "connect_args": connect_args,
+    "pool_recycle": 300, # Recycle every 5 minutes (safer for Neon/Serverless)
+    "pool_pre_ping": True # Critical: Test connection before use to catch closed SSL sockets
+
+if "sqlite" in settings.DATABASE_URL:
+    engine_kwargs["poolclass"] = NullPool
+else:
+    engine_kwargs["pool_size"] = 20
+    engine_kwargs["max_overflow"] = 10
+
+# Handle 'postgres://' which is deprecated in SQLAlchemy 1.4+
+db_url = settings.DATABASE_URL
+if db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql://", 1)
+
 engine = create_engine(
-    settings.DATABASE_URL, 
-    connect_args=connect_args,
-    pool_size=20,          # 20 connections
-    max_overflow=10,       # 10 extra if needed
-    pool_recycle=3600,     # Recycle every hour
+    db_url, 
+    **engine_kwargs
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
