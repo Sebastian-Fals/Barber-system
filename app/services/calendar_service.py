@@ -1,5 +1,6 @@
 import os
 import datetime
+from sqlalchemy.orm import Session
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from app.core.config import settings
@@ -85,5 +86,83 @@ class CalendarService:
         except Exception as e:
             print(f"Error checking availability: {e}")
             return []
+
+
+    def watch_calendar(self, calendar_id: str, webhook_url: str, channel_id: str):
+        """
+        Subscribes to push notifications for a specific calendar.
+        """
+        if not self.service:
+            print("Service not initialized")
+            return None
+
+        body = {
+            "id": channel_id,
+            "type": "web_hook",
+            "address": webhook_url
+        }
+        
+        try:
+            print(f"Subscribing to {calendar_id} with channel {channel_id}")
+            response = self.service.events().watch(calendarId=calendar_id, body=body).execute()
+            print(f"Watch Response: {response}")
+            return response
+        except Exception as e:
+            print(f"Error watching calendar {calendar_id}: {e}")
+            return None
+
+    def sync_events(self, calendar_id: str, db: Session = None):
+        """
+        Syncs events from Google Calendar to DB (Checking for cancellations).
+        Ideally, we should store and use 'syncToken'. For MVP, we look back 24h.
+        """
+        if not self.service: return
+        
+        # We need a db session. Passing it as arg or creating new one?
+        # Ideally caller handles DB session, or we create local if not provided.
+        # But this service is usually instantiated globally. 
+        # For the webhook handler, we will pass the DB session.
+        if not db:
+            print("Error: DB Session required for sync")
+            return
+
+        from app.models.models import Appointment, AppointmentStatus
+
+        # Look back 24 hours to catch recent updates
+        time_min = (datetime.datetime.utcnow() - datetime.timedelta(hours=24)).isoformat() + 'Z'
+        
+        try:
+            print(f"Syncing events for {calendar_id} since {time_min}")
+            events_result = self.service.events().list(
+                calendarId=calendar_id,
+                timeMin=time_min,
+                singleEvents=True,
+                showDeleted=True, # Important to catch cancellations
+                orderBy='updated'
+            ).execute()
+            
+            items = events_result.get('items', [])
+            
+            for event in items:
+                g_id = event.get('id')
+                status = event.get('status') # confirmed, tentative, cancelled
+                
+                if status == 'cancelled':
+                    # Find appointment in DB
+                    appt = db.query(Appointment).filter(
+                        Appointment.google_event_id == g_id,
+                        Appointment.status == AppointmentStatus.CONFIRMED
+                    ).first()
+                    
+                    if appt:
+                        print(f"Sync: Found cancelled event {g_id}. Cancelling local appointment {appt.id}")
+                        appt.status = AppointmentStatus.CANCELLED
+                        db.commit()
+                        
+                        # Notify Customer? (Optional: could be added here)
+                        # whatsapp_service.send_message(..., "Tu cita fue cancelada...")
+                        
+        except Exception as e:
+            print(f"Error syncing events: {e}")
 
 calendar_service = CalendarService()

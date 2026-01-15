@@ -36,6 +36,14 @@ class ConversationService:
             logger.info(f"New Customer detected: {from_number}")
             customer = Customer(phone=from_number, name="Cliente Nuevo")
             self.db.add(customer); self.db.commit()
+            
+            # Start Onboarding Flow
+            self.flow_manager.update_state(customer, "ASK_NAME", {})
+            whatsapp_service.send_message(self.phone_number_id, from_number, 
+                f"¡Hola! 👋 Bienvenido a *{self.business.name}*.\n"
+                "Soy tu asistente virtual. Para atenderte mejor, ¿me podrías decir tu nombre?"
+            )
+            return
 
         # Handling Interactive payloads directly
         if interactive_id:
@@ -117,6 +125,27 @@ class ConversationService:
                   whatsapp_service.send_message(self.phone_number_id, from_number, "Escribe la fecha que prefieras (ej: 'El viernes')")
              return
          
+        # --- Main Menu Handlers ---
+        if interactive_id == "menu_book":
+            self._send_barber_menu(customer)
+            return
+
+        if interactive_id == "menu_my_appts":
+            self._handle_my_appointments(customer)
+            return
+            
+        if interactive_id == "menu_info":
+            info_msg = (
+                f"ℹ️ *Información de {self.business.name}*\n\n"
+                "📍 Dirección: Calle Falsa 123\n"
+                "📞 Teléfono: +57 300 123 4567\n"
+                "⏰ Horario: Lunes a Sábado, 9am - 8pm"
+            )
+            whatsapp_service.send_message(self.phone_number_id, from_number, info_msg)
+            self._send_welcome_menu(customer, message_body="¿En qué más te puedo ayudar?")
+            return
+        # --------------------------
+         
         if interactive_id == "confirm_yes":
             self._finalize_booking(customer)
             return
@@ -132,6 +161,7 @@ class ConversationService:
                  whatsapp_service.send_message(self.phone_number_id, from_number, "Tu cita ha sido cancelada correctamente.")
             else:
                  whatsapp_service.send_message(self.phone_number_id, from_number, "No encontré esa cita.")
+            self._send_welcome_menu(customer) # Back to main menu
             return
 
         if interactive_id.startswith("page_"):
@@ -159,17 +189,23 @@ class ConversationService:
         if intent == "PROVIDE_NAME" or (customer.conversation_state == "ASK_NAME" and len(reply) > 2): # Heuristic
             name = extracted.get("customer_name") or reply # Simplification
             customer.name = name
-            self.flow_manager.update_state(customer, CustomerData.IDLE, {})
-            whatsapp_service.send_message(self.phone_number_id, from_number, f"Gracias {name}.")
+            
+            whatsapp_service.send_message(self.phone_number_id, from_number, f"Un gusto, {name}.")
+            self._send_welcome_menu(customer, message_body="¿Cómo puedo ayudarte hoy?")
             return
 
         elif intent == "CHITCHAT":
+         # Check for explicit closing signal from LLM or heuristic keywords
+         is_closing = (reply == "CLOSE_CONVERSATION") or any(k in reply.lower() for k in ["adios", "bye", "chao", "close_conversation"])
+         
+         if is_closing:
+             whatsapp_service.send_message(self.phone_number_id, from_number, "¡Con gusto! 👋")
+             self._send_welcome_menu(customer, message_body="Si necesitas algo más, aquí está el menú:")
+             self.flow_manager.update_state(customer, CustomerData.IDLE, {})
+         else:
              whatsapp_service.send_message(self.phone_number_id, from_number, reply)
-             if any(k in reply.lower() for k in ["adios", "bye", "chao"]): # Loose check
-                  self.flow_manager.update_state(customer, CustomerData.IDLE, {})
-             else:
-                  self.flow_manager.update_state(customer, customer.conversation_state, current_data)
-             return
+             self.flow_manager.update_state(customer, customer.conversation_state, current_data)
+         return
 
         elif intent == "BOOK_APPOINTMENT":
             self._process_booking_intent(customer, extracted, current_data, from_number, reply)
@@ -209,7 +245,8 @@ class ConversationService:
         # Update Data
         if extracted.get("barber_name"):
             barbers = self.db.query(Barber).filter(Barber.business_id == self.business.id).all()
-            found = next((b for b in barbers if b.name.lower() == extracted["barber_name"].lower()), None)
+            # Loose match: check if extracted name is part of barber name or vice versa
+            found = next((b for b in barbers if extracted["barber_name"].lower() in b.name.lower() or b.name.lower() in extracted["barber_name"].lower()), None)
             if found: data["barber_id"] = found.id
         
         if extracted.get("date"): data["date"] = extracted["date"]
@@ -220,14 +257,14 @@ class ConversationService:
 
         # Validation
         if "barber_id" not in data:
-            msg = "¿Con quién te gustaría agendar?"
+            msg = "¡Claro! ✂️ ¿Con qué profesional te gustaría atenderte hoy?"
             barbers = self.db.query(Barber).filter(Barber.business_id == self.business.id).all()
             buttons = [{"id": f"barber_{b.id}", "title": b.name} for b in barbers[:3]]
             whatsapp_service.send_interactive_button(self.phone_number_id, from_number, msg, buttons)
             return
 
         if "date" not in data:
-            whatsapp_service.send_message(self.phone_number_id, from_number, "¿Para qué fecha?")
+            whatsapp_service.send_message(self.phone_number_id, from_number, "Perfecto. 📅 ¿Qué día te queda mejor?")
             self.flow_manager.update_state(customer, CustomerData.SELECT_DATE, data)
             return
 
@@ -235,7 +272,7 @@ class ConversationService:
         try:
             target_date = datetime.datetime.strptime(data["date"], "%Y-%m-%d").date()
         except ValueError:
-            whatsapp_service.send_message(self.phone_number_id, from_number, "Fecha inválida.")
+            whatsapp_service.send_message(self.phone_number_id, from_number, "Ups, esa fecha no se ve bien. 🫤 Intenta de nuevo (ej. 'Mañana').")
             return
 
         slots = self.booking_service.get_available_slots(data["barber_id"], target_date)
@@ -243,20 +280,70 @@ class ConversationService:
             slots = self.booking_service.filter_slots_by_period(slots, data["time_period"])
 
         if not slots:
-             whatsapp_service.send_message(self.phone_number_id, from_number, "No hay disponibilidad.")
+             whatsapp_service.send_message(self.phone_number_id, from_number, "Lo siento 😔, no encontré huecos disponibles para esa fecha/hora. ¿Podrías probar otro día? 🗓️")
              return
 
         if "time" in data:
+            # Clear period if specific time is given to avoid conflict
+            if data.get("time_period"): 
+                del data["time_period"]
+                
             target_h = int(data["time"].split(":")[0])
             matched = next((s for s in slots if s.hour == target_h), None)
+            
             if matched:
                 self._confirm_time(customer, data, matched.strftime("%H:%M"))
             else:
-                 self._send_slot_menu(customer, target_date, slots, header=f"A las {target_h} no se puede. Mira estos:")
+                 # Find closest slots
+                 self._send_slot_menu(customer, target_date, slots, header=f"⚠️ A las {target_h}:00 ya está ocupado. Te sugiero estos horarios:")
         else:
             self._send_slot_menu(customer, target_date, slots)
 
     def _send_welcome_menu(self, customer, page=0, message_body=None):
+        """
+        Sends the MAIN MENU with high-level options.
+        """
+        msg = message_body if message_body else (
+            f"Hola {customer.name or ''}! 👋 Bienvenido a *{self.business.name}*.\n\n"
+            "Soy tu asistente virtual. ¿Cómo puedo ayudarte hoy?"
+        )
+        
+        buttons = [
+            {"id": "menu_book", "title": "📅 Agendar Cita"},
+            {"id": "menu_my_appts", "title": "📂 Mis Citas"},
+            {"id": "menu_info", "title": "ℹ️ Info y Ayuda"}
+        ]
+        
+        whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
+        # We stay in IDLE state, waiting for the user to pick an option
+        self.flow_manager.update_state(customer, CustomerData.IDLE, {})
+
+    def _handle_my_appointments(self, customer):
+        """
+        Lists active appointments for the customer.
+        """
+        appts = self.db.query(Appointment).filter(
+             Appointment.customer_id == customer.id, 
+             Appointment.status == AppointmentStatus.CONFIRMED,
+             Appointment.start_time > datetime.datetime.utcnow()
+        ).order_by(Appointment.start_time.asc()).all()
+        
+        if not appts:
+            whatsapp_service.send_message(self.phone_number_id, customer.phone, "No tienes citas activas pendientes.")
+            self._send_welcome_menu(customer, message_body="¿Deseas agendar una nueva?")
+        else:
+            msg = "*Tus Citas Pendientes:*\n"
+            for appt in appts:
+                msg += f"- {appt.start_time.strftime('%d/%m %H:%M')} con {appt.barber.name}\n"
+            
+            whatsapp_service.send_message(self.phone_number_id, customer.phone, msg)
+            # send main menu again or leave it? Let's send main menu for easy navigation
+            self._send_welcome_menu(customer, message_body="¿Algo más?")
+
+    def _send_barber_menu(self, customer, page=0, message_body=None):
+        """
+        Shows the list of barbers. Previously named _send_welcome_menu.
+        """
         barbers = self.db.query(Barber).filter(Barber.business_id == self.business.id).all()
         start = page * 2; end = start + 2
         batch = barbers[start:end]
@@ -264,7 +351,13 @@ class ConversationService:
         buttons = []
         for b in batch: buttons.append({"id": f"barber_{b.id}", "title": b.name})
         
-        msg = message_body if message_body else f"Hola {customer.name or 'amigo'}! Bienvenido a *{self.business.name}*."
+        # Pagination
+        if end < len(barbers):
+            buttons.append({"id": f"page_{page+1}", "title": "Ver más..."})
+        if page > 0:
+             buttons.append({"id": f"page_{page-1}", "title": "Anterior"})
+        
+        msg = message_body if message_body else "Selecciona tu barbero de preferencia:"
         whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
         self.flow_manager.update_state(customer, CustomerData.SELECT_BARBER, {"page": page})
 
@@ -350,5 +443,7 @@ class ConversationService:
         if appt:
              self.flow_manager.update_state(customer, CustomerData.IDLE, {})
              whatsapp_service.send_message(self.phone_number_id, customer.phone, f"✅ Cita confirmada!")
+             # Show Main Menu to signal "Session End" or "What's Next"
+             self._send_welcome_menu(customer, message_body="¿Deseas realizar alguna otra operación?")
         else:
              whatsapp_service.send_message(self.phone_number_id, customer.phone, "Error al crear la cita.")

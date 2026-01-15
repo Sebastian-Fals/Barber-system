@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     WHATSAPP_API_TOKEN: str
     WHATSAPP_VERIFY_TOKEN: str
     
+    # Calendar Webhook
+    WEBHOOK_PUBLIC_URL: Optional[str] = None
+    
     # Google
     GOOGLE_APPLICATION_CREDENTIALS: str
     GOOGLE_API_KEY: Optional[str] = None

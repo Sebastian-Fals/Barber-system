@@ -1,6 +1,7 @@
 from google import genai
 from google.genai import types
 import json
+import yaml  # Moved to top level
 from app.core.config import settings
 import datetime
 from app.core.logging_config import logger
@@ -23,7 +24,6 @@ class LLMService:
 
         try:
             with open("app/core/prompts.yaml", "r", encoding="utf-8") as f:
-                import yaml
                 prompts = yaml.safe_load(f)
             
             template = prompts.get("system_prompt", "")

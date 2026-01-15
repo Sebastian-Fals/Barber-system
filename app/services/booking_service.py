@@ -60,11 +60,12 @@ class BookingService:
         return available_slots
 
     def filter_slots_by_period(self, slots, period):
-        if period == "morning":
+        p = period.lower() if period else ""
+        if p in ["morning", "mañana"]:
             return [s for s in slots if s.hour < 12]
-        elif period == "afternoon":
+        elif p in ["afternoon", "tarde"]:
             return [s for s in slots if s.hour >= 12 and s.hour < 18]
-        elif period == "evening":
+        elif p in ["evening", "noche"]:
             return [s for s in slots if s.hour >= 18]
         return slots
 
@@ -80,16 +81,19 @@ class BookingService:
         
         # Calendar Sync
         google_event_id = None
-        try:
-            if barber.calendar_id: 
+        if barber.calendar_id: 
+            try:
                 event = calendar_service.create_event(barber.calendar_id, summary, start_time, end_time)
                 if event: google_event_id = event.get("id")
+            except Exception as e:
+                logger.error(f"Error creating barber calendar event: {e}")
             
-            business = self.db.query(Business).filter(Business.id == barber.business_id).first()
-            if business and business.calendar_id: 
+        business = self.db.query(Business).filter(Business.id == barber.business_id).first()
+        if business and business.calendar_id: 
+            try:
                 calendar_service.create_event(business.calendar_id, f"[{barber.name}] {summary}", start_time, end_time)
-        except Exception as e:
-            logger.error(f"Error creating calendar event: {e}")
+            except Exception as e:
+                logger.error(f"Error creating business calendar event: {e}")
 
         new_appointment = Appointment(
             customer_id=customer.id, 

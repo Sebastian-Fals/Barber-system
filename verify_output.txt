@@ -1,0 +1,30 @@
+
+--- Testing Time Period Filtering ---
+2026-01-14 18:08:20,356 - app - INFO - Msg from 5559876543 | Type: text | ID: None | Body: por la tarde
+2026-01-14 18:08:20,361 - app - INFO - Intent: BOOK_APPOINTMENT | Extracted: {'barber_name': 'Juan Perez', 'date': '2023-12-01', 'time_period': 'tarde'}
+F
+--- Testing Empathetic Date Error ---
+2026-01-14 18:08:20,377 - app - INFO - Msg from 5559876543 | Type: text | ID: None | Body: cita el dia rarito
+2026-01-14 18:08:20,378 - app - INFO - Intent: BOOK_APPOINTMENT | Extracted: {'barber_name': 'Juan Perez', 'date': 'invalid-date'}
+.PASS: Empathetic error message verified.
+
+--- Testing Loose Barber Name Matching ---
+2026-01-14 18:08:20,381 - app - INFO - Msg from 5559876543 | Type: text | ID: None | Body: cita con juan
+2026-01-14 18:08:20,381 - app - INFO - Intent: BOOK_APPOINTMENT | Extracted: {'barber_name': 'juan', 'date': '2023-12-25'}
+.
+======================================================================
+FAIL: test_availability_time_period (__main__.TestFixes.test_availability_time_period)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Python314\Lib\unittest\mock.py", line 1432, in patched
+    return func(*newargs, **newkeywargs)
+  File "C:\Users\Sebastian Fals\OneDrive\Documentos\Works\sistema-citas\scripts\verify_fixes.py", line 145, in test_availability_time_period
+    self.assertIn("15:00", button_titles)
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: '15:00' not found in ['3:00pm', '5:00pm']
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.039s
+
+FAILED (failures=1)
+PASS: Barber matched successfully (did not ask to select barber).
