@@ -87,9 +87,31 @@ def send_reminder_1h(appt: Appointment):
     msg = f"⏳ *Tu cita es en 1 hora*\n\nNos vemos pronto en {business.name} con {barber.name}."
     if business:
         whatsapp_service.send_message(business.phone_number_id, customer.phone, msg)
+        
+def cleanup_processed_messages():
+    """
+    Deletes processed messages older than 3 days to keep DB clean.
+    """
+    db: Session = SessionLocal()
+    try:
+        from app.models.models import ProcessedMessage
+        limit_date = datetime.datetime.now() - datetime.timedelta(days=3)
+        
+        deleted_count = db.query(ProcessedMessage).filter(
+            ProcessedMessage.created_at < limit_date
+        ).delete()
+        
+        db.commit()
+        if deleted_count > 0:
+            logger.info(f"Cleanup: Deleted {deleted_count} old processed messages.")
+    except Exception as e:
+        logger.error(f"Error in cleanup: {e}")
+    finally:
+        db.close()
 
 def start_scheduler():
     if not scheduler.running:
         scheduler.add_job(check_upcoming_appointments, 'interval', minutes=10) # Run every 10 mins
+        scheduler.add_job(cleanup_processed_messages, 'interval', hours=24) # Run daily
         scheduler.start()
         logger.info("Scheduler started!")
