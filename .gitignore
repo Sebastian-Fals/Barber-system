@@ -134,8 +134,18 @@ dmypy.json
 *.swo
 
 # Project specific
+# Project specific
 citas.db
 citas.db-shm
 citas.db-wal
 credentials.json
 ngrok.exe
+ngrok.log
+app.log
+test_*.txt
+verify_*.txt
+*_fail.txt
+
+# OS
+.DS_Store
+Thumbs.db
