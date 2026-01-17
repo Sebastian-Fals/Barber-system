@@ -1,6 +1,7 @@
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+
 from app.core.config import settings
 
 # For SQLite, we need to disable checking for same thread
@@ -11,8 +12,8 @@ from sqlalchemy.pool import NullPool
 
 engine_kwargs = {
     "connect_args": connect_args,
-    "pool_recycle": 300, # Recycle every 5 minutes (safer for Neon/Serverless)
-    "pool_pre_ping": True # Critical: Test connection before use to catch closed SSL sockets
+    "pool_recycle": 300,  # Recycle every 5 minutes (safer for Neon/Serverless)
+    "pool_pre_ping": True,  # Critical: Test connection before use to catch closed SSL sockets
 }
 
 if "sqlite" in settings.DATABASE_URL:
@@ -26,13 +27,11 @@ db_url = settings.DATABASE_URL
 if db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql://", 1)
 
-engine = create_engine(
-    db_url, 
-    **engine_kwargs
-)
+engine = create_engine(db_url, **engine_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
+
 
 def get_db():
     db = SessionLocal()
@@ -40,3 +39,33 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+import pytz
+from sqlalchemy import DateTime, TypeDecorator
+
+from app.core.datetime_utils import to_utc
+
+
+class UTCDateTime(TypeDecorator):
+    """
+    TypeDecorator that ensures datetimes are always stored as UTC-aware (or naive UTC for SQLite) in the DB
+    and returned as UTC-aware objects.
+    """
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        # Convert to UTC before saving
+        return to_utc(value)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        # Ensure returned value is UTC aware
+        if value.tzinfo is None:
+            return pytz.UTC.localize(value)
+        return value.astimezone(pytz.UTC)

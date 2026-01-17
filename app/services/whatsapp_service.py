@@ -1,6 +1,9 @@
-import requests
 import json
+
+import requests
+
 from app.core.config import settings
+
 
 class WhatsAppService:
     def __init__(self):
@@ -43,30 +46,18 @@ class WhatsAppService:
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json",
         }
-        
+
         formatted_buttons = []
         for btn in buttons:
-            formatted_buttons.append({
-                "type": "reply",
-                "reply": {
-                    "id": btn["id"],
-                    "title": btn["title"]
-                }
-            })
+            formatted_buttons.append({"type": "reply", "reply": {"id": btn["id"], "title": btn["title"]}})
 
         data = {
             "messaging_product": "whatsapp",
             "to": to_number,
             "type": "interactive",
-            "interactive": {
-                "type": "button",
-                "body": {"text": body_text},
-                "action": {
-                    "buttons": formatted_buttons
-                }
-            }
+            "interactive": {"type": "button", "body": {"text": body_text}, "action": {"buttons": formatted_buttons}},
         }
-        
+
         try:
             response = requests.post(url, headers=headers, json=data)
             response.raise_for_status()
@@ -74,5 +65,6 @@ class WhatsAppService:
         except requests.exceptions.RequestException as e:
             print(f"Error sending WhatsApp interactive message: {e}")
             return None
+
 
 whatsapp_service = WhatsAppService()

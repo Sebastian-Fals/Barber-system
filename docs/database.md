@@ -13,7 +13,7 @@ erDiagram
         string phone_number_id
         string calendar_id
     }
-    
+
     BARBER ||--|{ APPOINTMENT : atiende
     BARBER {
         int id

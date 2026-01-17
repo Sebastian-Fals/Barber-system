@@ -1,21 +1,27 @@
-from fastapi import APIRouter, Request, HTTPException, Depends, Body, BackgroundTasks
-from app.core.config import settings
-from app.core.database import SessionLocal, get_db 
-from sqlalchemy.orm import Session
-from app.core.logging_config import logger
 import asyncio
-from app.services.conversation_service import ConversationService
 from collections import OrderedDict
+
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Request
+from sqlalchemy.orm import Session
+
+from app.core.config import settings
+from app.core.database import SessionLocal, get_db
+from app.core.logging_config import logger
+from app.services.conversation_service import ConversationService
 
 router = APIRouter()
 
-from app.models.models import ProcessedMessage
-from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.models.models import ProcessedMessage
 
 # Removing in-memory cache
 
-def process_background_message(phone_number_id: str, from_number: str, msg_body: str, msg_type: str, interactive_id: str):
+
+def process_background_message(
+    phone_number_id: str, from_number: str, msg_body: str, msg_type: str, interactive_id: str
+):
     # Create a NEW session for the background task
     db = SessionLocal()
     try:
@@ -27,6 +33,7 @@ def process_background_message(phone_number_id: str, from_number: str, msg_body:
         logger.error(f"Error processing message: {e}", exc_info=True)
     finally:
         db.close()
+
 
 @router.get("/webhook")
 async def verify_webhook(request: Request):
@@ -45,6 +52,7 @@ async def verify_webhook(request: Request):
             raise HTTPException(status_code=403, detail="Verification failed")
     return {"status": "ok"}
 
+
 @router.post("/webhook")
 def receive_webhook(background_tasks: BackgroundTasks, body: dict = Body(...), db: Session = Depends(get_db)):
     """
@@ -55,23 +63,23 @@ def receive_webhook(background_tasks: BackgroundTasks, body: dict = Body(...), d
             for change in entry.get("changes", []):
                 value = change.get("value", {})
                 phone_number_id = value.get("metadata", {}).get("phone_number_id")
-                
+
                 if params_messages := value.get("messages", []):
                     for message in params_messages:
                         msg_id = message.get("id")
-                        
+
                         # Deduplication Check (DB Based)
                         try:
                             exists = db.query(ProcessedMessage).filter(ProcessedMessage.message_id == msg_id).first()
                             if exists:
                                 logger.info(f"Duplicate message ignored: {msg_id}")
                                 continue
-                            
+
                             # Log message as processed
                             new_msg = ProcessedMessage(message_id=msg_id)
                             db.add(new_msg)
                             db.commit()
-                            
+
                         except IntegrityError:
                             db.rollback()
                             logger.info(f"Duplicate message detected (race condition): {msg_id}")
@@ -91,17 +99,12 @@ def receive_webhook(background_tasks: BackgroundTasks, body: dict = Body(...), d
                             msg_body = message.get("text", {}).get("body")
                         elif msg_type == "interactive":
                             interactive_id = message.get("interactive", {}).get("button_reply", {}).get("id")
-                        
+
                         logger.info(f"Queuing message {msg_id} from {from_number}")
-                        
+
                         # Dispatch to Background
                         background_tasks.add_task(
-                            process_background_message, 
-                            phone_number_id, 
-                            from_number, 
-                            msg_body, 
-                            msg_type, 
-                            interactive_id
+                            process_background_message, phone_number_id, from_number, msg_body, msg_type, interactive_id
                         )
-    
+
     return {"status": "received"}

@@ -65,7 +65,7 @@ El archivo `.env` es el corazón del sistema.
 
     # Google
     GOOGLE_APPLICATION_CREDENTIALS="credentials.json"
-    
+
     # Webhook (Tu URL pública, ej: Ngrok)
     WEBHOOK_PUBLIC_URL="https://tudominio.ngrok-free.app/api/v1/google-webhook"
     ```

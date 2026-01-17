@@ -1,14 +1,14 @@
 from app.core.database import SessionLocal
-from app.models.models import Customer, Appointment
+from app.models.models import Appointment, Customer
 
 db = SessionLocal()
 try:
     print("🗑️ Deleting all Appointments...")
     db.query(Appointment).delete()
-    
+
     print("🗑️ Deleting all Customers...")
     db.query(Customer).delete()
-    
+
     db.commit()
     print("✅ All customer data cleared.")
 except Exception as e:

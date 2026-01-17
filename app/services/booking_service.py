@@ -1,15 +1,27 @@
-from sqlalchemy.orm import Session
-from app.models.models import Business, Barber, Appointment, AppointmentStatus, Customer
-from app.services.calendar_service import calendar_service
 import datetime
 import json
-from app.core.logging_config import logger
+
 import pytz
+from sqlalchemy.orm import Session
+
 from app.core.config import settings
+from app.core.datetime_utils import get_local_timezone, now_local, to_local, to_utc
+from app.core.logging_config import logger
+from app.models.models import Appointment, AppointmentStatus, Barber, Business, Customer
+from app.repositories.appointment_repository import AppointmentRepository
+from app.repositories.barber_repository import BarberRepository
+from app.repositories.business_repository import BusinessRepository
+from app.repositories.customer_repository import CustomerRepository
+from app.services.calendar_service import calendar_service
+
 
 class BookingService:
     def __init__(self, db: Session):
         self.db = db
+        self.appointment_repo = AppointmentRepository(db)
+        self.barber_repo = BarberRepository(db)
+        self.business_repo = BusinessRepository(db)
+        self.customer_repo = CustomerRepository(db)
 
     def get_business_hours(self, business: Business, target_date: datetime.date):
         start_h, end_h = 9, 18
@@ -20,35 +32,43 @@ class BookingService:
                 if day_key in schedule:
                     start_h = schedule[day_key].get("start", 9)
                     end_h = schedule[day_key].get("end", 18)
-            except: pass
+            except:
+                pass
         return start_h, end_h
 
     def get_available_slots(self, barber_id: int, target_date: datetime.date):
-        barber = self.db.query(Barber).filter(Barber.id == barber_id).first()
-        if not barber: return []
-        
-        business = self.db.query(Business).filter(Business.id == barber.business_id).first()
+        barber = self.barber_repo.get_by_id(barber_id)
+        if not barber:
+            return []
+
+        business = self.business_repo.get_by_id(barber.business_id)
         open_h, close_h = self.get_business_hours(business, target_date)
 
-        day_start = datetime.datetime(target_date.year, target_date.month, target_date.day, open_h, 0, 0)
-        day_end = datetime.datetime(target_date.year, target_date.month, target_date.day, close_h, 0, 0)
+        local_tz = get_local_timezone()
+        # Create aware datetimes directly
+        day_start = local_tz.localize(
+            datetime.datetime(target_date.year, target_date.month, target_date.day, open_h, 0, 0)
+        )
+        day_end = local_tz.localize(
+            datetime.datetime(target_date.year, target_date.month, target_date.day, close_h, 0, 0)
+        )
 
         busy_intervals = []
         if barber.calendar_id:
-             try:
+            try:
                 busy_intervals = calendar_service.get_busy_slots(barber.calendar_id, day_start, day_end)
-             except Exception as e:
-                 logger.error(f"Error fetching calendar slots: {e}")
+            except Exception as e:
+                logger.error(f"Error fetching calendar slots: {e}")
 
         available_slots = []
         current_slot = day_start
-        
-        # Get current time (naive local, since day_start/end are naive)
-        now = datetime.datetime.now()
+
+        # Get current time (Aware Local)
+        now = now_local()
 
         while current_slot < day_end:
             slot_end = current_slot + datetime.timedelta(hours=1)
-            
+
             # 1. Skip past slots if target_date is today
             if current_slot < now:
                 current_slot = slot_end
@@ -60,26 +80,74 @@ class BookingService:
                     # Clean Zulu time if present
                     s_str = b_start_str.replace("Z", "+00:00")
                     e_str = b_end_str.replace("Z", "+00:00")
-                    
+
                     b_start = datetime.datetime.fromisoformat(s_str)
                     b_end = datetime.datetime.fromisoformat(e_str)
-                    
-                    # If Google returned Aware time, convert to Bogota Local (Naive)
+
+                    # If Google returned Aware time, convert to Bogota Local (Aware)
                     if b_start.tzinfo is not None:
-                        tz = pytz.timezone(settings.TIMEZONE)
-                        b_start = b_start.astimezone(tz).replace(tzinfo=None)
-                        b_end = b_end.astimezone(tz).replace(tzinfo=None)
-                    
-                    # Now compare Naive vs Naive
+                        b_start = to_local(b_start)
+                        b_end = to_local(b_end)
+                    else:
+                        # Should not happen with Google, but if naive, localize it
+                        b_start = to_local(b_start)
+                        b_end = to_local(b_end)
+
+                    # Now compare Aware vs Aware
                     if (current_slot < b_end) and (slot_end > b_start):
-                        is_free = False; break
+                        is_free = False
+                        break
                 except Exception as e:
-                    logger.error(f"Error parsing slot: {e}") 
+                    logger.error(f"Error parsing slot: {e}")
                     is_free = False
-            
-            if is_free: available_slots.append(current_slot)
+
+            if is_free:
+                available_slots.append(current_slot)
             current_slot = slot_end
         return available_slots
+
+    def is_custom_slot_available(self, barber_id: int, target_date: datetime.date, time_obj: datetime.time) -> bool:
+        """
+        Checks if a specific time (e.g., 12:50) is free for 1 hour.
+        """
+        barber = self.barber_repo.get_by_id(barber_id)
+        if not barber:
+            return False
+
+        business = self.business_repo.get_by_id(barber.business_id)
+        start_h, end_h = self.get_business_hours(business, target_date)
+
+        # 1. Business Hours Check (Simple for now, checks hour integer range)
+        # Better: check actual times
+        if time_obj.hour < start_h or time_obj.hour >= end_h:
+            return False
+
+        local_tz = get_local_timezone()
+        start_dt = local_tz.localize(datetime.datetime.combine(target_date, time_obj))
+        end_dt = start_dt + datetime.timedelta(hours=1)
+
+        # 2. Check Past
+        if start_dt < now_local():
+            return False
+
+        # 3. Check Google Calendar Overlaps
+        if barber.calendar_id:
+            try:
+                # Query strictly this interval
+                busy = calendar_service.get_busy_slots(barber.calendar_id, start_dt, end_dt)
+                if busy:
+                    return False
+            except Exception as e:
+                logger.error(f"Error checking custom slot: {e}")
+                # Fail open or closed? Safe is closed.
+                return False
+
+        # 4. Check Local Overlaps
+        existing = self.appointment_repo.get_overlapping_confirmed(barber_id, start_dt, end_dt)
+        if existing:
+            return False
+
+        return True
 
     def filter_slots_by_period(self, slots, period):
         p = period.lower() if period else ""
@@ -92,16 +160,47 @@ class BookingService:
         return slots
 
     def create_appointment(self, customer: Customer, barber_id: int, date_str: str, time_str: str):
-        barber = self.db.query(Barber).filter(Barber.id == barber_id).first()
-        if not barber: return None
+        barber = self.barber_repo.get_by_id(barber_id)
+        if not barber:
+            return None
 
-        date_parts = list(map(int, date_str.split("-")))
-        time_parts = list(map(int, time_str.split(":")))
-        start_time = datetime.datetime(date_parts[0], date_parts[1], date_parts[2], time_parts[0], time_parts[1])
+        # Robust Parsing
+        try:
+            # Date Parsing
+            if isinstance(date_str, datetime.date):
+                target_date = date_str
+            else:
+                target_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+
+            # Time Parsing
+            target_time = None
+            if isinstance(time_str, datetime.time):
+                target_time = time_str
+            else:
+                # Try formats: HH:MM:SS, HH:MM, HH:MM AM/PM
+                formats = ["%H:%M:%S", "%H:%M", "%I:%M %p", "%I:%M%p"]
+                for fmt in formats:
+                    try:
+                        target_time = datetime.datetime.strptime(str(time_str).strip(), fmt).time()
+                        break
+                    except ValueError:
+                        continue
+                if not target_time:
+                    raise ValueError(f"Invalid time format: {time_str}")
+
+        except ValueError as e:
+            logger.error(f"Date/Time parsing error in create_appointment: {e}")
+            return None
+
+        # Construct aware datetime
+        local_tz = get_local_timezone()
+        naive_start = datetime.datetime.combine(target_date, target_time)
+        start_time = local_tz.localize(naive_start)
+
         end_time = start_time + datetime.timedelta(hours=1)
         summary = f"Cita: {customer.name} - {customer.phone}"
-        
-        business = self.db.query(Business).filter(Business.id == barber.business_id).first()
+
+        business = self.business_repo.get_by_id(barber.business_id)
         if not business:
             logger.error(f"Barber {barber.id} has no associated business")
             return None
@@ -109,59 +208,57 @@ class BookingService:
         # 1. Validate Business Hours
         start_h, end_h = self.get_business_hours(business, start_time.date())
         if start_time.hour < start_h or start_time.hour >= end_h:
-             logger.warning(f"Attempt to book outside business hours: {start_time}")
-             return None # Or raise specific error
+            logger.warning(f"Attempt to book outside business hours: {start_time}")
+            return None  # Or raise specific error
 
         # 2. Validate Availability (Double Check)
-        # Note: robust systems check DB overlap here too, not just Google Calendar
-        # For this MVP, we rely on the caller checking, but adding a DB check is safer.
-        existing = self.db.query(Appointment).filter(
-            Appointment.barber_id == barber_id,
-            Appointment.status == AppointmentStatus.CONFIRMED,
-            Appointment.start_time < end_time,
-            Appointment.end_time > start_time
-        ).first()
+        existing = self.appointment_repo.get_overlapping_confirmed(barber_id, start_time, end_time)
         if existing:
             logger.warning(f"Slot overlapping with local appointment {existing.id}")
             return None
 
         # 3. Calendar Sync
         google_event_id = None
-        if barber.calendar_id: 
+
+        g_id_result = None
+        if barber.calendar_id:
             try:
-                # Returns ID string or None
+                # Create event in Barber's calendar
                 g_id_result = calendar_service.create_event(barber.calendar_id, summary, start_time, end_time)
-                if g_id_result: google_event_id = g_id_result
+                if g_id_result:
+                    google_event_id = g_id_result
             except Exception as e:
                 logger.error(f"Error creating barber calendar event: {e}")
-            
-        if business.calendar_id: 
+
+        # Try to sync with Business Calendar (Duplicate Event Strategy due to Service Account 403 on Attendees)
+        if business.calendar_id:
             try:
                 calendar_service.create_event(business.calendar_id, f"[{barber.name}] {summary}", start_time, end_time)
             except Exception as e:
                 logger.error(f"Error creating business calendar event: {e}")
 
-        new_appointment = Appointment(
-            customer_id=customer.id, 
-            barber_id=barber.id, 
-            start_time=start_time, 
-            end_time=end_time, 
-            status=AppointmentStatus.CONFIRMED, 
-            google_event_id=google_event_id or "local_only"
-        )
-        self.db.add(new_appointment)
-        self.db.commit()
+        appt_data = {
+            "customer_id": customer.id,
+            "barber_id": barber.id,
+            "start_time": start_time,
+            "end_time": end_time,
+            "status": AppointmentStatus.CONFIRMED.value,
+            "google_event_id": google_event_id or "local_only",
+        }
+
+        # Use repository create
+        new_appointment = self.appointment_repo.create(appt_data)
         return new_appointment
 
     def cancel_appointment(self, appointment_id: int):
-        appt = self.db.query(Appointment).filter(Appointment.id == appointment_id).first()
+        appt = self.appointment_repo.get_by_id(appointment_id)
         if appt:
             appt.status = AppointmentStatus.CANCELLED
-            if appt.google_event_id and appt.barber.calendar_id:
+            if appt.google_event_id and appt.google_event_id != "local_only" and appt.barber.calendar_id:
                 try:
                     calendar_service.delete_event(appt.barber.calendar_id, appt.google_event_id)
                 except Exception as e:
                     logger.error(f"Error deleting calendar event: {e}")
-            self.db.commit()
+            self.appointment_repo.db.commit()  # Or self.db.commit()
             return True
         return False

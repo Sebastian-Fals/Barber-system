@@ -1,5 +1,5 @@
-import sys
 import os
+import sys
 
 print(f"Python Executable: {sys.executable}")
 print(f"Version: {sys.version}")
@@ -9,6 +9,7 @@ for p in sys.path[:5]:
 
 try:
     import yaml
+
     print(f"SUCCESS: PyYAML imported from {yaml.__file__}")
 except ImportError as e:
     print(f"FAILURE: Could not import yaml. {e}")

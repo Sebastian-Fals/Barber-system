@@ -1,5 +1,7 @@
-from app.core.database import engine
 from sqlalchemy import text
+
+from app.core.database import engine
+
 
 def run_migration():
     with engine.connect() as conn:
@@ -10,8 +12,9 @@ def run_migration():
             print("Added schedule column")
         except Exception as e:
             print(f"Error (maybe exists): {e}")
-        
+
         conn.commit()
+
 
 if __name__ == "__main__":
     run_migration()

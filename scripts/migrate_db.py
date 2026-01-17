@@ -1,9 +1,12 @@
-import sys
 import os
+import sys
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.core.database import engine
 from sqlalchemy import text
+
+from app.core.database import engine
+
 
 def run_migration():
     with engine.connect() as conn:
@@ -14,17 +17,18 @@ def run_migration():
             "ALTER TABLE appointments ADD COLUMN reminded_1h BOOLEAN DEFAULT 0",
             "ALTER TABLE businesses ADD COLUMN open_hour INTEGER DEFAULT 9",
             "ALTER TABLE businesses ADD COLUMN close_hour INTEGER DEFAULT 18",
-            "CREATE TABLE IF NOT EXISTS processed_messages (id INTEGER PRIMARY KEY, message_id VARCHAR UNIQUE, created_at DATETIME)"
+            "CREATE TABLE IF NOT EXISTS processed_messages (id INTEGER PRIMARY KEY, message_id VARCHAR UNIQUE, created_at DATETIME)",
         ]
-        
+
         for s in stmts:
             try:
                 conn.execute(text(s))
                 print(f"Executed: {s}")
             except Exception as e:
                 print(f"Skipped: {s} | Error: {e}")
-        
+
         conn.commit()
+
 
 if __name__ == "__main__":
     run_migration()

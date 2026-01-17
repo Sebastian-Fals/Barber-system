@@ -1,5 +1,5 @@
 from app.core.database import SessionLocal
-from app.models.models import Business, Barber
+from app.models.models import Barber, Business
 
 db = SessionLocal()
 b = db.query(Business).first()
@@ -12,4 +12,4 @@ else:
 
 barbers = db.query(Barber).all()
 for bar in barbers:
-     print(f"BARBER: {bar.name} | CAL: {bar.calendar_id}")
+    print(f"BARBER: {bar.name} | CAL: {bar.calendar_id}")

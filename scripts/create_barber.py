@@ -1,5 +1,6 @@
 from app.core.database import SessionLocal
-from app.models.models import Business, Barber
+from app.models.models import Barber, Business
+
 
 def create_barber(business_name, barber_name, calendar_id):
     db = SessionLocal()
@@ -9,12 +10,7 @@ def create_barber(business_name, barber_name, calendar_id):
             print("Business not found.")
             return
 
-        new_barber = Barber(
-            business_id=business.id,
-            name=barber_name,
-            calendar_id=calendar_id,
-            phone="000"
-        )
+        new_barber = Barber(business_id=business.id, name=barber_name, calendar_id=calendar_id, phone="000")
         db.add(new_barber)
         db.commit()
         print(f"Barber '{barber_name}' created for '{business_name}'.")
@@ -22,6 +18,7 @@ def create_barber(business_name, barber_name, calendar_id):
         print(e)
     finally:
         db.close()
+
 
 if __name__ == "__main__":
     print("--- Crear Barbero ---")

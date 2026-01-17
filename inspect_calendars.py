@@ -1,6 +1,7 @@
 from sqlalchemy.orm import Session
+
 from app.core.database import SessionLocal
-from app.models.models import Business, Barber
+from app.models.models import Barber, Business
 
 db = SessionLocal()
 print("--- Businesses ---")
