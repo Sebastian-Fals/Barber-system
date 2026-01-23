@@ -6,14 +6,13 @@ from sqlalchemy.orm import Session
 
 from app.core.i18n import message_loader
 from app.core.logging_config import logger
-from app.models.models import Barber, Business, Customer, CustomerData
-from app.repositories.barber_repository import BarberRepository
-from app.repositories.business_repository import BusinessRepository
-from app.repositories.customer_repository import CustomerRepository
-from app.services.booking_service import BookingService
-from app.services.flow_service import FlowManager  # Still needed for get_data/update_state helper wrapping
+from app.features.appointments.service import BookingService
+from app.features.business.barber_repository import BarberRepository
+from app.features.business.repository import BusinessRepository
+from app.features.communication.whatsapp_service import whatsapp_service
+from app.features.customers.repository import CustomerRepository
+from app.models.models import Business, Customer, CustomerData
 from app.services.handlers.base_handler import BaseHandler
-from app.services.whatsapp_service import whatsapp_service
 
 # We can probably move FlowManager logic into Repositories or usage here directly,
 # but for now reusing FlowManager logic (which wraps customer.conversation_data) is fine
@@ -39,7 +38,7 @@ class BookingHandler(BaseHandler):
     def _get_data(self, customer: Customer) -> dict:
         try:
             return json.loads(customer.conversation_data) if customer.conversation_data else {}
-        except:
+        except (ValueError, TypeError):
             return {}
 
     def _update_state(self, customer: Customer, state: str, data: dict = None):
@@ -153,9 +152,7 @@ class BookingHandler(BaseHandler):
             display = slot.strftime("%I:%M%p").lower().lstrip("0")
             buttons.append({"id": f"time_{time_str}", "title": display})
 
-        if (
-            remaining > 3
-        ):  # We check against 3 because if we had exactly 3, we showed them all and don't need Next (assuming strict pages or just stream).
+        if remaining > 3:  # We check against 3 because if we had 3, we showed all (assuming strict pages/stream).
             # Wait, if remaining > 3, we showed 2, so there are remaining-2 left.
             # Logic check:
             # Total 4. Start 0. Remaining 4. > 3 is True. Limit 2. Show 0,1. Next button. Correct.
@@ -197,7 +194,7 @@ class BookingHandler(BaseHandler):
             try:
                 target_date = datetime.datetime.strptime(data["last_slots_date"], "%Y-%m-%d").date()
                 self._show_slots(customer, data, target_date, page)
-            except:
+            except (ValueError, TypeError):
                 pass
 
     def _finalize_booking(self, customer: Customer):

@@ -1,10 +1,9 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, Request
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
-from app.core.database import SessionLocal, get_db
+from app.core.database import get_db
 from app.core.logging_config import logger
-from app.services.calendar_service import calendar_service
+from app.features.calendar.service import calendar_service
 
 router = APIRouter()
 

@@ -1,20 +1,16 @@
 import asyncio
-from collections import OrderedDict
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Request
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import SessionLocal, get_db
 from app.core.logging_config import logger
-from app.services.conversation_service import ConversationService
+from app.features.communication.conversation_service import ConversationService
+from app.models.models import ProcessedMessage
 
 router = APIRouter()
-
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
-
-from app.models.models import ProcessedMessage
 
 # Removing in-memory cache
 

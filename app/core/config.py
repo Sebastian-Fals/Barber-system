@@ -8,6 +8,8 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
 
     DATABASE_URL: str = "sqlite:///./citas.db"
+    ADMIN_DATABASE_URL: Optional[str] = None
+    ENCRYPTION_KEY: Optional[str] = None
 
     # WhatsApp
     WHATSAPP_API_TOKEN: str

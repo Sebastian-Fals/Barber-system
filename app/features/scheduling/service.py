@@ -1,12 +1,12 @@
 import datetime
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.core.database import SessionLocal
 from app.core.logging_config import logger
-from app.models.models import Appointment, AppointmentStatus, Barber, Customer
-from app.services.whatsapp_service import whatsapp_service
+from app.features.communication.whatsapp_service import whatsapp_service
+from app.models.models import Appointment, AppointmentStatus, Barber
 
 scheduler = BackgroundScheduler()
 
@@ -28,9 +28,10 @@ def check_upcoming_appointments():
         # Appointments in this window that are CONFIRMED and NOT reminded
         upcoming_24 = (
             db.query(Appointment)
+            .options(joinedload(Appointment.customer), joinedload(Appointment.barber).joinedload(Barber.business))
             .filter(
                 Appointment.status == AppointmentStatus.CONFIRMED,
-                Appointment.reminded_24h == False,
+                Appointment.reminded_24h.is_(False),
                 Appointment.start_time >= start_win_24,
                 Appointment.start_time <= end_win_24,
             )
@@ -49,9 +50,10 @@ def check_upcoming_appointments():
 
         upcoming_1 = (
             db.query(Appointment)
+            .options(joinedload(Appointment.customer), joinedload(Appointment.barber).joinedload(Barber.business))
             .filter(
                 Appointment.status == AppointmentStatus.CONFIRMED,
-                Appointment.reminded_1h == False,
+                Appointment.reminded_1h.is_(False),
                 Appointment.start_time >= start_win_1,
                 Appointment.start_time <= end_win_1,
             )
@@ -74,7 +76,11 @@ def send_reminder_24h(appt: Appointment):
     barber = appt.barber
 
     # 24h Message with Options
-    msg = f"🔔 *Recordatorio de Cita Mañana*\n\nHola {customer.name}, te recordamos tu cita:\n💈 {barber.name}\n📅 {appt.start_time.strftime('%Y-%m-%d')}\n⏰ {appt.start_time.strftime('%H:%M')}\n\n¿Nos confirmas tu asistencia?"
+    msg = (
+        f"🔔 *Recordatorio de Cita Mañana*\n\nHola {customer.name}, te recordamos tu cita:\n"
+        f"💈 {barber.name}\n📅 {appt.start_time.strftime('%Y-%m-%d')}\n"
+        f"⏰ {appt.start_time.strftime('%H:%M')}\n\n¿Nos confirmas tu asistencia?"
+    )
 
     buttons = [
         {"id": f"rem_confirm_{appt.id}", "title": "✅ Confirmar"},

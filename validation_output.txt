@@ -1,0 +1,81 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.0, pytest-9.0.2, pluggy-1.6.0 -- C:\Python314\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\Sebastian Fals\OneDrive\Documentos\Works\sistema-citas
+configfile: pytest.ini
+plugins: anyio-4.12.1
+collecting ... collected 2 items
+
+tests/test_name_validation.py::TestNameValidation::test_invalid_name_rejected FAILED [ 50%]
+tests/test_name_validation.py::TestNameValidation::test_valid_name_accepted PASSED [100%]
+
+================================== FAILURES ===================================
+________________ TestNameValidation.test_invalid_name_rejected ________________
+
+self = <test_name_validation.TestNameValidation testMethod=test_invalid_name_rejected>
+mock_ws = <MagicMock name='whatsapp_service' id='2461107032416'>
+mock_welcome = <MagicMock name='WelcomeHandler' id='2461107033424'>
+mock_booking = <MagicMock name='BookingHandler' id='2461107034096'>
+mock_query = <MagicMock name='QueryHandler' id='2461107034432'>
+
+    @patch("app.features.communication.conversation_service.QueryHandler")
+    @patch("app.features.communication.conversation_service.BookingHandler")
+    @patch("app.features.communication.conversation_service.WelcomeHandler")
+    @patch("app.features.communication.whatsapp_service.whatsapp_service")
+    def test_invalid_name_rejected(self, mock_ws, mock_welcome, mock_booking, mock_query):
+        # Setup
+        db = MagicMock()
+        service = ConversationService(db, "123")
+
+        # Mock Customer in WAITING_NAME state (using new mock structure)
+        customer = Customer(id=1, phone="555", name="Usuario", conversation_state=CustomerData.WAITING_NAME)
+
+        # Mock Repo injection (ConversationService creates them, but we can override or mock constructors too)
+        # Actually easier to override after init or mock constructors.
+        # But we want to test _route_text_message.
+
+        service.customer_repo = MagicMock()
+        service.business_repo = MagicMock()
+        # Handlers are already mocked by class patches (service.welcome_handler is a Mock instance)
+
+        # Action: User says "Hola"
+        service._route_text_message(customer, "Hola")
+
+        # Verify
+        service.customer_repo.update.assert_not_called()
+>       mock_ws.send_message.assert_called()
+
+tests\test_name_validation.py:32:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <MagicMock name='whatsapp_service.send_message' id='2461107043840'>
+
+    def assert_called(self):
+        """assert that the mock was called at least once
+        """
+        if self.call_count == 0:
+            msg = ("Expected '%s' to have been called." %
+                   (self._mock_name or 'mock'))
+>           raise AssertionError(msg)
+E           AssertionError: Expected 'send_message' to have been called.
+
+C:\Python314\Lib\unittest\mock.py:954: AssertionError
+---------------------------- Captured stdout call -----------------------------
+Error sending WhatsApp message: 400 Client Error: Bad Request for url: https://graph.facebook.com/v18.0/123/messages
+============================== warnings summary ===============================
+app\core\config.py:6
+  C:\Users\Sebastian Fals\OneDrive\Documentos\Works\sistema-citas\app\core\config.py:6: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class Settings(BaseSettings):
+
+app\core\database.py:33
+  C:\Users\Sebastian Fals\OneDrive\Documentos\Works\sistema-citas\app\core\database.py:33: MovedIn20Warning: The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+    Base = declarative_base()
+
+..\..\..\..\AppData\Roaming\Python\Python314\site-packages\google\genai\types.py:43
+  C:\Users\Sebastian Fals\AppData\Roaming\Python\Python314\site-packages\google\genai\types.py:43: DeprecationWarning: '_UnionGenericAlias' is deprecated and slated for removal in Python 3.17
+    VersionedUnionType = Union[builtin_types.UnionType, _UnionGenericAlias]
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_name_validation.py::TestNameValidation::test_invalid_name_rejected
+=================== 1 failed, 1 passed, 3 warnings in 2.03s ===================

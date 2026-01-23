@@ -2,7 +2,7 @@ import json
 
 from sqlalchemy.orm import Session
 
-from app.models.models import Customer, CustomerData
+from app.models.models import Customer
 
 
 class FlowManager:
@@ -19,7 +19,7 @@ class FlowManager:
             if isinstance(data, str):
                 try:
                     data = json.loads(data)
-                except:
+                except (ValueError, TypeError):
                     pass
             customer.conversation_data = json.dumps(data)
         self.db.commit()
@@ -27,7 +27,7 @@ class FlowManager:
     def get_data(self, customer: Customer) -> dict:
         try:
             return json.loads(customer.conversation_data)
-        except:
+        except (ValueError, TypeError):
             return {}
 
     def update_data(self, customer: Customer, key: str, value):

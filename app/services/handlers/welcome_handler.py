@@ -4,11 +4,11 @@ from sqlalchemy.orm import Session
 
 from app.core.i18n import message_loader
 from app.core.logging_config import logger
+from app.features.appointments.repository import AppointmentRepository
+from app.features.business.barber_repository import BarberRepository
+from app.features.communication.whatsapp_service import whatsapp_service
 from app.models.models import Business, Customer, CustomerData
-from app.repositories.appointment_repository import AppointmentRepository
-from app.repositories.barber_repository import BarberRepository
 from app.services.handlers.base_handler import BaseHandler
-from app.services.whatsapp_service import whatsapp_service
 
 
 class WelcomeHandler(BaseHandler):
@@ -70,13 +70,13 @@ class WelcomeHandler(BaseHandler):
             # We should inject or use a repository to update state.
             # Let's add CustomerRepository usage or just direct update since we have DB session?
             # Better: Use CustomerRepository.
-            from app.repositories.customer_repository import CustomerRepository
+            from app.features.customers.repository import CustomerRepository
 
             CustomerRepository(self.db).update_state(customer, CustomerData.IDLE)
 
     def _start_booking_flow(self, customer: Customer):
         # 1. Update State
-        from app.repositories.customer_repository import CustomerRepository
+        from app.features.customers.repository import CustomerRepository
 
         CustomerRepository(self.db).update_state(customer, CustomerData.SELECT_BARBER)
 

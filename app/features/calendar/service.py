@@ -5,6 +5,7 @@ import threading
 import pytz
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -214,7 +215,10 @@ class CalendarService:
                 appts_to_cancel = (
                     db.query(Appointment)
                     .filter(
-                        Appointment.google_event_id.in_(cancelled_ids),
+                        or_(
+                            Appointment.google_barber_event_id.in_(cancelled_ids),
+                            Appointment.google_business_event_id.in_(cancelled_ids),
+                        ),
                         Appointment.status == AppointmentStatus.CONFIRMED,
                     )
                     .all()
@@ -224,7 +228,7 @@ class CalendarService:
                     print(f"Sync: Bulk Cancelling {len(appts_to_cancel)} appointments")
                     for appt in appts_to_cancel:
                         appt.status = AppointmentStatus.CANCELLED
-                        print(f" - Cancelled Appt ID {appt.id} (GID: {appt.google_event_id})")
+                        print(f" - Cancelled Appt ID {appt.id}")
                     db.commit()
                 else:
                     print("Sync: No matching local appointments to cancel.")

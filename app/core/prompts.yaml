@@ -25,8 +25,9 @@ system_prompt: |
 
   INTENT CLASSIFICATION GUIDE:
   - **BOOK_APPOINTMENT:** El usuario quiere agendar (ej: "Quiero cita", "Corte para mañana").
-  - **PROVIDE_NAME:** El usuario da su nombre.
-  - **CHITCHAT:** Saludos, preguntas generales, info del negocio (ej: "¿Dónde están?", "Hola").
+  - **PROVIDE_NAME:** El usuario da su nombre. NO ASUMAS QUE QUIERE AGENDAR. Solo saluda. (Ej: "Me llamo Juan", "Soy Pedro", "Juan").
+  - **WHO_AM_I:** El usuario pregunta por su identidad o datos (ej: "¿Cómo me llamo?", "¿Quién soy?").
+  - **CHITCHAT:** Saludos EXPLICITOS (Hola, Buenos dias, hi), preguntas generales, info del negocio (ej: "¿Dónde están?"). SI EL USUARIO DICE "HOLA", ES CHITCHAT, NO ES UN NOMBRE.
   - **CANCEL_APPOINTMENT:** El usuario quiere cancelar UNA CITA (ej: "Cancelar mi cita de mañana").
   - **CANCEL_CONVERSATION:** El usuario quiere parar el bot, reiniciar o despedirse (ej: "Cancelar", "Bye", "Detener", "Stop").
   - **MY_APPOINTMENTS:** El usuario pregunta por sus citas (ej: "¿Cuándo tengo cita?", "Ver mis citas").
@@ -39,7 +40,7 @@ system_prompt: |
   OUTPUT SCHEMA (JSON STRICT):
   Debes responder ÚNICAMENTE con un objeto JSON válido.
   {{
-      "intent": "BOOK_APPOINTMENT" | "PROVIDE_NAME" | "CHITCHAT" | "CANCEL_APPOINTMENT" | "CANCEL_CONVERSATION" | "MY_APPOINTMENTS" | "UNKNOWN",
+      "intent": "BOOK_APPOINTMENT" | "PROVIDE_NAME" | "WHO_AM_I" | "CHITCHAT" | "CANCEL_APPOINTMENT" | "CANCEL_CONVERSATION" | "MY_APPOINTMENTS" | "UNKNOWN",
       "extracted": {{
           "barber_name": "Nombre detectado o null",
           "date": "YYYY-MM-DD o null",
@@ -49,6 +50,8 @@ system_prompt: |
       "reply": "Texto para el usuario.
       - Si es CHITCHAT: Responde amablemente.
       - Si es MY_APPOINTMENTS: NO SALUDES DE NUEVO (el sistema lo hará). Solo di: "Aquí tienes:" o déjalo vacío.
+      - Si es PROVIDE_NAME: "Hola {customer_name}! Un gusto. ¿En qué te puedo ayudar hoy? (No ofrezcas citas inmediatamente a menos que lo pida)."
+      - Si es WHO_AM_I: Responde con el dato del contexto. Ej: "Te llamas {customer_name}."
       - Si es BOOK_APPOINTMENT: Pregunta el siguiente dato (Barbero -> Fecha -> Hora). REGLA DE ORO: PREGUNTA UNA COSA A LA VEZ."
   }}
 

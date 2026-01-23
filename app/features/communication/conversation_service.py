@@ -1,13 +1,13 @@
 from sqlalchemy.orm import Session
 
 from app.core.logging_config import logger
+from app.features.business.repository import BusinessRepository
+from app.features.communication.whatsapp_service import whatsapp_service
+from app.features.customers.repository import CustomerRepository
 from app.models.models import Customer, CustomerData
-from app.repositories.business_repository import BusinessRepository
-from app.repositories.customer_repository import CustomerRepository
 from app.services.handlers.booking_handler import BookingHandler
 from app.services.handlers.query_handler import QueryHandler
 from app.services.handlers.welcome_handler import WelcomeHandler
-from app.services.whatsapp_service import whatsapp_service
 
 
 class ConversationService:
@@ -64,9 +64,19 @@ class ConversationService:
         text = message_body.lower().strip()
         state = customer.conversation_state
 
+        # 0. Enforce Name Collection for Existing Users with Default Name
+        # If we have a "legacy" user or one who acted weirdly, make sure we get the name.
+        if (not customer.name or customer.name == "Usuario") and state != CustomerData.WAITING_NAME:
+            # If they are erroneously in another state, reset to WAITING_NAME
+            self.customer_repo.update_state(customer, CustomerData.WAITING_NAME)
+            from app.core.i18n import message_loader
+
+            whatsapp_service.send_message(self.phone_number_id, customer.phone, message_loader.get("welcome_ask_name"))
+            return
+
         # 1. Global Commands (ALWAYS Check First)
         # These keywords should trigger a reset regardless of AI status.
-        if text in ["hola", "hi", "menu", "inicio", "start", "cancelar", "reset"]:
+        if text in ["hola", "hi", "menu", "inicio", "start", "cancelar"]:
             # 'cancelar' can be handled by QueryHandler for "smart cancel" or strict reset.
             # If strict reset is preferred:
             self.customer_repo.update_state(customer, CustomerData.IDLE)
@@ -85,7 +95,55 @@ class ConversationService:
             # But we must ensure we don't double-reply if AI is disabled.
             pass  # Fall through to AI check
 
-        # 2. Check AI Status (Global Context)
+        # 2. State-based Routing (Prioritized States)
+        # We must handle WAITING_NAME *before* AI because it's a specific data collection step.
+        if state == CustomerData.WAITING_NAME:
+            # Update Name
+            new_name = message_body.strip()
+
+            # Validation: Prevent "Hola", "Menu", etc. being saved as name
+            invalid_names = [
+                "hola",
+                "hi",
+                "bot",
+                "usuario",
+                "si",
+                "no",
+                "cancelar",
+                "menu",
+                "dia",
+                "tarde",
+                "noche",
+                "start",
+                "inicio",
+            ]
+            if len(new_name) < 3 or new_name.lower() in invalid_names:
+                whatsapp_service.send_message(
+                    self.phone_number_id,
+                    customer.phone,
+                    "Hmm, ese no parece un nombre o es muy corto. 🤔\n¿Podrías decirme tu nombre real?",
+                )
+                return
+
+            new_name = new_name.title()
+            self.customer_repo.update(customer, {"name": new_name})
+            self.customer_repo.update_state(customer, CustomerData.IDLE)
+
+            # Check AI
+            business = self.business_repo.get_by_phone_number_id(self.phone_number_id)
+            enable_ai = business.ai_enabled if business else False
+
+            if enable_ai:
+                # Delegate to AI for the response (Natural Flow)
+                # We pass the message so AI can analyze intent (PROVIDE_NAME) and generate a greeting.
+                self.query_handler.handle_message(customer, message_body)
+            else:
+                # Legacy: Proceed to Welcome Menu
+                self.welcome_handler.handle_message(customer, "menu")
+
+            return
+
+        # 3. Check AI Status (Global Context)
         business = self.business_repo.get_by_phone_number_id(self.phone_number_id)
         enable_ai = business.ai_enabled if business else False
 
@@ -95,17 +153,6 @@ class ConversationService:
             return
 
         # --- LEGACY / NON-AI FLOW BELOW ---
-
-        # State-based Routing
-        if state == CustomerData.WAITING_NAME:
-            # Update Name
-            new_name = message_body.strip().title()
-            self.customer_repo.update(customer, {"name": new_name})
-            self.customer_repo.update_state(customer, CustomerData.IDLE)
-
-            # Proceed to Welcome Menu
-            self.welcome_handler.handle_message(customer, "menu")
-            return
 
         if state == CustomerData.IDLE:
             # AI Disabled -> Simple Menu Loop
@@ -121,18 +168,9 @@ class ConversationService:
             # Active Booking Flow -> BookingHandler
             handled = self.booking_handler.handle_message(customer, message_body)
             if not handled:
-                # Fallback
-                # If AI is enabled, try AI. Else, reiterate instruction.
-                business = self.business_repo.get_by_phone_number_id(self.phone_number_id)
-                enable_ai = business.ai_enabled if business else False
-
-                if enable_ai:
-                    logger.info(f"BookingHandler did not handle text in state {state}. Delegating to QueryHandler.")
-                    self.query_handler.handle_message(customer, message_body)
-                else:
-                    whatsapp_service.send_message(
-                        self.phone_number_id, customer.phone, "Por favor, usa los botones del menú. 🙏"
-                    )
+                whatsapp_service.send_message(
+                    self.phone_number_id, customer.phone, "Por favor, usa los botones del menú. 🙏"
+                )
 
         else:
             # Fallback

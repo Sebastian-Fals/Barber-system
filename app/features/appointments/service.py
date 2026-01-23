@@ -1,29 +1,29 @@
 import datetime
 import json
 
-import pytz
+# import pytz # Unused
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
-from app.core.datetime_utils import get_local_timezone, now_local, to_local, to_utc
+# from app.core.config import settings # Unused
+from app.core.datetime_utils import get_local_timezone, now_local, to_local  # , to_utc
 from app.core.logging_config import logger
-from app.models.models import Appointment, AppointmentStatus, Barber, Business, Customer
-from app.repositories.appointment_repository import AppointmentRepository
-from app.repositories.barber_repository import BarberRepository
-from app.repositories.business_repository import BusinessRepository
-from app.repositories.customer_repository import CustomerRepository
-from app.services.calendar_service import calendar_service
+from app.features.appointments.repository import AppointmentRepository
+from app.features.business.barber_repository import BarberRepository
+from app.features.business.repository import BusinessRepository
+from app.features.calendar.service import calendar_service
+from app.features.customers.repository import CustomerRepository
+from app.models.models import AppointmentStatus, Business, Customer  # , Appointment, Barber
 
 
 class BookingService:
     def __init__(self, db: Session):
-        self.db = db
+        self.db: Session = db
         self.appointment_repo = AppointmentRepository(db)
         self.barber_repo = BarberRepository(db)
         self.business_repo = BusinessRepository(db)
         self.customer_repo = CustomerRepository(db)
 
-    def get_business_hours(self, business: Business, target_date: datetime.date):
+    def get_business_hours(self, business: Business, target_date: datetime.date) -> tuple[int, int]:
         start_h, end_h = 9, 18
         if business.schedule:
             try:
@@ -32,11 +32,11 @@ class BookingService:
                 if day_key in schedule:
                     start_h = schedule[day_key].get("start", 9)
                     end_h = schedule[day_key].get("end", 18)
-            except:
-                pass
+            except Exception as e:
+                logger.error(f"Error parsing business schedule: {e}")
         return start_h, end_h
 
-    def get_available_slots(self, barber_id: int, target_date: datetime.date):
+    def get_available_slots(self, barber_id: int, target_date: datetime.date) -> list[datetime.datetime]:
         barber = self.barber_repo.get_by_id(barber_id)
         if not barber:
             return []
@@ -218,22 +218,22 @@ class BookingService:
             return None
 
         # 3. Calendar Sync
-        google_event_id = None
+        barber_event_id = None
+        business_event_id = None
 
-        g_id_result = None
         if barber.calendar_id:
             try:
                 # Create event in Barber's calendar
-                g_id_result = calendar_service.create_event(barber.calendar_id, summary, start_time, end_time)
-                if g_id_result:
-                    google_event_id = g_id_result
+                barber_event_id = calendar_service.create_event(barber.calendar_id, summary, start_time, end_time)
             except Exception as e:
                 logger.error(f"Error creating barber calendar event: {e}")
 
         # Try to sync with Business Calendar (Duplicate Event Strategy due to Service Account 403 on Attendees)
         if business.calendar_id:
             try:
-                calendar_service.create_event(business.calendar_id, f"[{barber.name}] {summary}", start_time, end_time)
+                business_event_id = calendar_service.create_event(
+                    business.calendar_id, f"[{barber.name}] {summary}", start_time, end_time
+                )
             except Exception as e:
                 logger.error(f"Error creating business calendar event: {e}")
 
@@ -243,7 +243,8 @@ class BookingService:
             "start_time": start_time,
             "end_time": end_time,
             "status": AppointmentStatus.CONFIRMED.value,
-            "google_event_id": google_event_id or "local_only",
+            "google_barber_event_id": barber_event_id,
+            "google_business_event_id": business_event_id,
         }
 
         # Use repository create
@@ -254,11 +255,22 @@ class BookingService:
         appt = self.appointment_repo.get_by_id(appointment_id)
         if appt:
             appt.status = AppointmentStatus.CANCELLED
-            if appt.google_event_id and appt.google_event_id != "local_only" and appt.barber.calendar_id:
+
+            # Delete from Barber Calendar
+            if appt.google_barber_event_id and appt.barber.calendar_id:
                 try:
-                    calendar_service.delete_event(appt.barber.calendar_id, appt.google_event_id)
+                    calendar_service.delete_event(appt.barber.calendar_id, appt.google_barber_event_id)
                 except Exception as e:
-                    logger.error(f"Error deleting calendar event: {e}")
+                    logger.error(f"Error deleting barber calendar event: {e}")
+
+            # Delete from Business Calendar
+            business = appt.barber.business
+            if appt.google_business_event_id and business and business.calendar_id:
+                try:
+                    calendar_service.delete_event(business.calendar_id, appt.google_business_event_id)
+                except Exception as e:
+                    logger.error(f"Error deleting business calendar event: {e}")
+
             self.appointment_repo.db.commit()  # Or self.db.commit()
             return True
         return False

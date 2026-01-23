@@ -4,11 +4,11 @@ from unittest.mock import MagicMock
 import pytest
 from sqlalchemy.orm import Session
 
+from app.features.appointments.repository import AppointmentRepository
+from app.features.business.barber_repository import BarberRepository
+from app.features.business.repository import BusinessRepository
+from app.features.customers.repository import CustomerRepository
 from app.models.models import Business, Customer
-from app.repositories.appointment_repository import AppointmentRepository
-from app.repositories.barber_repository import BarberRepository
-from app.repositories.business_repository import BusinessRepository
-from app.repositories.customer_repository import CustomerRepository
 
 
 @pytest.fixture
@@ -19,13 +19,13 @@ def db_session():
 
 @pytest.fixture
 def mock_whatsapp():
-    with unittest.mock.patch("app.services.whatsapp_service.whatsapp_service") as mock:
+    with unittest.mock.patch("app.features.communication.whatsapp_service.whatsapp_service") as mock:
         yield mock
 
 
 @pytest.fixture
 def mock_llm():
-    with unittest.mock.patch("app.services.llm_service.llm_service") as mock:
+    with unittest.mock.patch("app.features.communication.llm_service.llm_service") as mock:
         yield mock
 
 

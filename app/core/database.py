@@ -1,14 +1,17 @@
-from sqlalchemy import create_engine
+import pytz
+from sqlalchemy import DateTime, String, TypeDecorator, create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
+from app.core.datetime_utils import to_utc
+from app.core.security import decrypt, encrypt
 
 # For SQLite, we need to disable checking for same thread
 # For Postgres, remove connect_args
 connect_args = {"check_same_thread": False} if "sqlite" in settings.DATABASE_URL else {}
 
-from sqlalchemy.pool import NullPool
 
 engine_kwargs = {
     "connect_args": connect_args,
@@ -41,12 +44,6 @@ def get_db():
         db.close()
 
 
-import pytz
-from sqlalchemy import DateTime, TypeDecorator
-
-from app.core.datetime_utils import to_utc
-
-
 class UTCDateTime(TypeDecorator):
     """
     TypeDecorator that ensures datetimes are always stored as UTC-aware (or naive UTC for SQLite) in the DB
@@ -69,3 +66,22 @@ class UTCDateTime(TypeDecorator):
         if value.tzinfo is None:
             return pytz.UTC.localize(value)
         return value.astimezone(pytz.UTC)
+
+
+class EncryptedString(TypeDecorator):
+    """
+    TypeDecorator that encrypts data before saving to DB and decrypts when retrieving.
+    """
+
+    impl = String
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        return encrypt(value)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        return decrypt(value)

@@ -1,19 +1,18 @@
-import datetime
 from typing import Any, Dict
 
 from sqlalchemy.orm import Session
 
 from app.core.i18n import message_loader
 from app.core.logging_config import logger
+from app.features.appointments.repository import AppointmentRepository
+from app.features.appointments.service import BookingService
+from app.features.business.barber_repository import BarberRepository
+from app.features.business.repository import BusinessRepository
+from app.features.communication.llm_service import llm_service
+from app.features.communication.whatsapp_service import whatsapp_service
+from app.features.customers.repository import CustomerRepository
 from app.models.models import Business, Customer, CustomerData
-from app.repositories.appointment_repository import AppointmentRepository
-from app.repositories.barber_repository import BarberRepository
-from app.repositories.business_repository import BusinessRepository
-from app.repositories.customer_repository import CustomerRepository
-from app.services.booking_service import BookingService
 from app.services.handlers.base_handler import BaseHandler
-from app.services.llm_service import llm_service
-from app.services.whatsapp_service import whatsapp_service
 
 
 class QueryHandler(BaseHandler):
@@ -137,12 +136,25 @@ class QueryHandler(BaseHandler):
             # Show appointments
             self._handle_my_appointments(customer, reply)
 
-        elif intent == "PROVIDE_NAME":
+        elif intent == "WHO_AM_I":
+            # Answer about identity
+            if reply:
+                whatsapp_service.send_message(self.phone_number_id, customer.phone, reply)
+            else:
+                whatsapp_service.send_message(
+                    self.phone_number_id, customer.phone, f"Te tengo registrado como {customer.name}."
+                )
+
             # Update Customer Name
             extracted = analysis.get("extracted", {})
             new_name = extracted.get("customer_name")
-            if new_name:
+
+            # Sanity Check for Names
+            invalid_names = ["hola", "hi", "bot", "usuario", "si", "no", "cancelar", "menu", "dia", "tarde", "noche"]
+            if new_name and new_name.lower().strip() not in invalid_names and len(new_name) > 2:
                 self.customer_repo.update(customer, {"name": new_name})
+            else:
+                logger.warning(f"Ignored invalid name update attempt: {new_name}")
 
             # Reply with LLM's message (which should be "Nice to meet you X")
             if reply:
@@ -194,10 +206,13 @@ class QueryHandler(BaseHandler):
         # Simple history - in a real app check conversation_data or a message log table
         history = []
 
+        from app.core.datetime_utils import now_local
+
+        local_now = now_local()
         return {
             "business_name": self.business.name if self.business else "Barbería",
             "business_info": info,
-            "today": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "today": local_now.strftime("%Y-%m-%d %H:%M"),
             "day_name": self._get_spanish_day_name(),
             "customer_name": customer.name,
             "barbers": barber_names,
@@ -237,7 +252,7 @@ class QueryHandler(BaseHandler):
                 data = {}
             else:
                 data = json.loads(customer.conversation_data) if customer.conversation_data else {}
-        except:
+        except (ValueError, TypeError):
             data = {}
 
         # 2. Logic to Jump Steps
@@ -247,7 +262,8 @@ class QueryHandler(BaseHandler):
             # Check if we are changing barber?
             # Or simply, if a barber is explicitly named, we should probably reset the date
             # unless the date is ALSO explicitly named in this message.
-            # This prevents specific case: User selected "Today" with Barber A, then changed mind and said "With Barber B" (implying start over for date?)
+            # This prevents specific case: User selected "Today" with Barber A, then changed mind and said
+            # "With Barber B" (implying start over for date?)
             # Or simpler: "Context Switch".
 
             # If we extracted a barber, and we did NOT extract a date, we should clear any previous date
@@ -332,7 +348,10 @@ class QueryHandler(BaseHandler):
                             nice_date = format_spanish_date(target_date_str)
                             nice_time = format_12h_time(time_str)
 
-                            msg = f"Perfecto. Resumen:\n📅 Fecha: {nice_date}\n⏰ Hora: {nice_time}\n💈 Barbero: {barber.name}\n\n¿Estás de acuerdo? (Responde 'Sí' o 'Más tarde')"
+                            msg = (
+                                f"Perfecto. Resumen:\n📅 Fecha: {nice_date}\n⏰ Hora: {nice_time}\n"
+                                f"💈 Barbero: {barber.name}\n\n¿Estás de acuerdo? (Responde 'Sí' o 'Más tarde')"
+                            )
                             whatsapp_service.send_message(self.phone_number_id, customer.phone, msg)
                             return  # Done, flow advanced.
                         else:
@@ -364,10 +383,18 @@ class QueryHandler(BaseHandler):
                     )
                 else:
                     # Limit to reasonable amount for text (e.g. 10)
-                    display_slots = [s.strftime("%H:%M") for s in slots[:12]]
+                    # Format to 12h AM/PM
+                    from app.core.datetime_utils import format_12h_time, format_spanish_date
+
+                    display_slots = [format_12h_time(s) for s in slots[:12]]
                     slots_text = ", ".join(display_slots)
 
-                    msg = f"Tengo estos horarios libres para el {target_date_str}:\n{slots_text}\n\n¿Cuál prefieres? (O escríbeme otra hora)"
+                    nice_date = format_spanish_date(target_date_obj)
+
+                    msg = (
+                        f"Tengo estos horarios libres para el {nice_date}:\n{slots_text}\n\n"
+                        f"¿Cuál prefieres? (O escríbeme otra hora)"
+                    )
                     whatsapp_service.send_message(self.phone_number_id, customer.phone, msg)
 
             except Exception as e:
@@ -420,20 +447,20 @@ class QueryHandler(BaseHandler):
         target_date_str = extracted.get("date") if extracted else None
         target_time_str = extracted.get("time") if extracted else None
 
-        import datetime
-
         from app.core.datetime_utils import format_12h_time, format_spanish_date, to_local
 
         if target_date_str:
             # Try to find match
-            # This is simple fuzzy match. If user has multiple appts on same day, this cancels the first one found unless time is also specified.
+            # This is simple fuzzy match. If user has multiple appts on same day, this cancels the first one found
+            # unless time is also specified.
             # TODO: Improve robustness for multi-appt days.
 
             found_appt = None
             date_match_label = target_date_str
 
             for appt in appts:
-                # CRITCAL: Convert DB UTC to Local before comparing date string (YYYY-MM-DD from user implies local date)
+                # CRITCAL: Convert DB UTC to Local before comparing date string
+                # (YYYY-MM-DD from user implies local date)
                 local_dt = to_local(appt.start_time)
                 appt_date = local_dt.date().strftime("%Y-%m-%d")
 
@@ -490,4 +517,6 @@ class QueryHandler(BaseHandler):
             "Saturday": "Sábado",
             "Sunday": "Domingo",
         }
-        return days.get(datetime.datetime.now().strftime("%A"), "Hoy")
+        from app.core.datetime_utils import now_local
+
+        return days.get(now_local().strftime("%A"), "Hoy")

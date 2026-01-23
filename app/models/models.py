@@ -2,10 +2,11 @@ import enum
 from datetime import datetime
 
 import pytz
-from sqlalchemy import Boolean, Column, DateTime, Enum, ForeignKey, Integer, String
+from sqlalchemy import Boolean, Column, ForeignKey, Integer, String
 from sqlalchemy.orm import relationship
 
-from app.core.database import Base, UTCDateTime
+from app.core.database import Base, EncryptedString, UTCDateTime
+from app.core.security import hash_value
 
 
 class AppointmentStatus(str, enum.Enum):
@@ -41,7 +42,7 @@ class Barber(Base):
     id = Column(Integer, primary_key=True, index=True)
     business_id = Column(Integer, ForeignKey("businesses.id"))
     name = Column(String, index=True)
-    phone = Column(String)
+    phone = Column(EncryptedString, nullable=True)  # Optional, for notifications
     calendar_id = Column(String, nullable=True, comment="Individual barber calendar")
 
     # Relationships
@@ -64,8 +65,9 @@ class Customer(Base):
     __tablename__ = "customers"
 
     id = Column(Integer, primary_key=True, index=True)
-    phone = Column(String, unique=True, index=True)
-    name = Column(String)
+    phone_hash = Column(String, unique=True, index=True)
+    phone_encrypted = Column(EncryptedString, nullable=False)
+    name = Column(EncryptedString)
 
     # Conversation State Management
     conversation_state = Column(String, default=CustomerData.IDLE)
@@ -75,6 +77,15 @@ class Customer(Base):
 
     # Relationships
     appointments = relationship("Appointment", back_populates="customer")
+
+    @property
+    def phone(self):
+        return self.phone_encrypted
+
+    @phone.setter
+    def phone(self, value):
+        self.phone_encrypted = value
+        self.phone_hash = hash_value(value)
 
 
 class Appointment(Base):
@@ -86,7 +97,9 @@ class Appointment(Base):
     start_time = Column(UTCDateTime, nullable=False)
     end_time = Column(UTCDateTime, nullable=False)
     status = Column(String, default=AppointmentStatus.PENDING)
-    google_event_id = Column(String, nullable=True)
+    # Dual Calendar Sync
+    google_barber_event_id = Column(String, nullable=True)
+    google_business_event_id = Column(String, nullable=True)
 
     # Notification Status
     reminded_24h = Column(Boolean, default=False)

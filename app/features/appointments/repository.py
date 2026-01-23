@@ -3,7 +3,7 @@ from typing import List, Optional
 
 from sqlalchemy.orm import Session
 
-from app.models.models import Appointment, AppointmentStatus, Barber
+from app.models.models import Appointment, AppointmentStatus
 from app.repositories.base import BaseRepository
 
 

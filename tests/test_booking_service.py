@@ -1,10 +1,8 @@
-from datetime import date, datetime, time, timedelta
+from datetime import date
 from unittest.mock import MagicMock
 
-import pytest
-
-from app.models.models import Appointment, AppointmentStatus, Customer, CustomerData
-from app.services.booking_service import BookingService
+from app.features.appointments.service import BookingService
+from app.models.models import Appointment, AppointmentStatus, Customer
 
 
 def test_get_available_slots_basic(db_session, barber_repo, appointment_repo, business_repo):
@@ -28,7 +26,7 @@ def test_get_available_slots_basic(db_session, barber_repo, appointment_repo, bu
     # To be clean: patch usage.
     # Let's just fix the date first.
 
-    with MagicMock() as mock_calendar:  # Ideally patch app.services.booking_service.calendar_service
+    with MagicMock():  # Ideally patch app.services.booking_service.calendar_service
         # But simpler: setup date to be future
         target_date = date(2030, 10, 27)  # Future date
 
@@ -54,9 +52,8 @@ def test_get_available_slots_basic(db_session, barber_repo, appointment_repo, bu
     barber_repo.get_by_id.return_value = mock_barber
 
     mock_business = MagicMock()
-    # Mocking schedule json logic might be tedious.
-    # If the service parses JSON schedule, we need to provide valid JSON.
     mock_business.schedule = '{"4": {"start": 9, "end": 18}}'  # Friday
+    mock_business.calendar_id = None  # important for logic
     business_repo.get_by_id.return_value = mock_business
 
     # Mock No appointments

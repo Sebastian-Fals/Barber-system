@@ -1,0 +1,159 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.0, pytest-9.0.2, pluggy-1.6.0
+rootdir: C:\Users\Sebastian Fals\OneDrive\Documentos\Works\sistema-citas
+configfile: pytest.ini
+plugins: anyio-4.12.1
+collected 3 items
+
+tests\test_handlers.py FFF                                               [100%]
+
+================================== FAILURES ===================================
+__________________________ test_welcome_handler_menu __________________________
+
+db_session = <MagicMock name='mock.db' spec='Session' id='2998639119728'>
+mock_whatsapp = <MagicMock name='whatsapp_service' id='2998639120064'>
+customer_repo = <MagicMock spec='CustomerRepository' id='2998639121072'>
+
+    def test_welcome_handler_menu(db_session, mock_whatsapp, customer_repo):
+        # Mock Business in DB
+        mock_business = MagicMock()
+        mock_business.id = 1
+        mock_business.name = "Barbería Test"
+        mock_business.phone_number_id = "123"
+
+        # Configure DB query chain
+        db_session.query.return_value.filter.return_value.first.return_value = mock_business
+
+        handler = WelcomeHandler(db_session, "123")
+        handler.customer_repo = customer_repo
+
+        customer = Customer(id=1, phone="57300123", name="Test", conversation_state="IDLE")
+
+        # Test handle_message
+        handler.handle_message(customer, "hola")
+>       mock_whatsapp.send_interactive_button.assert_called()
+
+tests\test_handlers.py:29:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <MagicMock name='whatsapp_service.send_interactive_button' id='2998639129808'>
+
+    def assert_called(self):
+        """assert that the mock was called at least once
+        """
+        if self.call_count == 0:
+            msg = ("Expected '%s' to have been called." %
+                   (self._mock_name or 'mock'))
+>           raise AssertionError(msg)
+E           AssertionError: Expected 'send_interactive_button' to have been called.
+
+C:\Python314\Lib\unittest\mock.py:954: AssertionError
+---------------------------- Captured stdout call -----------------------------
+Error sending WhatsApp interactive message: 401 Client Error: Unauthorized for url: https://graph.facebook.com/v18.0/123/messages
+__________________________ test_booking_handler_flow __________________________
+
+mock_bs_cls = <MagicMock name='BookingService' id='2998639119392'>
+db_session = <MagicMock name='mock.db' spec='Session' id='2998639127792'>
+mock_whatsapp = <MagicMock name='whatsapp_service' id='2998639129136'>
+customer_repo = <MagicMock spec='CustomerRepository' id='2998639130144'>
+barber_repo = <MagicMock spec='BarberRepository' id='2998641377360'>
+
+    @unittest.mock.patch("app.services.handlers.booking_handler.BookingService")
+    def test_booking_handler_flow(mock_bs_cls, db_session, mock_whatsapp, customer_repo, barber_repo):
+        # Mock Business in DB
+        mock_business = MagicMock()
+        mock_business.id = 1
+        db_session.query.return_value.filter.return_value.first.return_value = mock_business
+
+        handler = BookingHandler(db_session, "123")
+        handler.customer_repo = customer_repo
+        handler.barber_repo = barber_repo
+        # Mock BookingService instance
+        mock_bs_cls.return_value.get_available_slots.return_value = [] # or whatever needed
+
+        customer = Customer(id=1, phone="57300123", conversation_state="SELECT_BARBER")
+
+        # Mock Barber List
+        mock_barber = MagicMock()
+        mock_barber.id = 1
+        mock_barber.name = "Joe"
+        barber_repo.get_by_id.return_value = mock_barber # used in _handle_barber_selection
+
+        # 1. Start Flow (Usually triggered by WelcomeHandler, but if we call handle_message in SELECT_BARBER)
+        # The handler expects interactive inputs mostly.
+        # If we are in SELECT_BARBER, and user sends text? Handler might show list again?
+        # BookingHandler.handle_message for text mostly sends error/prompt again.
+        # Let's test handle_interactive for selecting a barber.
+
+        handler.handle_interactive(customer, "barber_1", {})
+
+>       assert customer.conversation_state == CustomerData.SELECT_DATE
+E       AssertionError: assert 'SELECT_BARBER' == <CustomerData...'SELECT_DATE'>
+E
+E         - SELECT_DATE
+E         ?        ^ ^
+E         + SELECT_BARBER
+E         ?        ^ ^^ +
+
+tests\test_handlers.py:61: AssertionError
+---------------------------- Captured stdout call -----------------------------
+Error sending WhatsApp interactive message: 401 Client Error: Unauthorized for url: https://graph.facebook.com/v18.0/123/messages
+__________________________ test_query_handler_intent __________________________
+
+db_session = <MagicMock name='mock.db' spec='Session' id='2998641384416'>
+mock_whatsapp = <MagicMock name='whatsapp_service' id='2998641384752'>
+mock_llm = <MagicMock name='llm_service' id='2998641385088'>
+customer_repo = <MagicMock spec='CustomerRepository' id='2998641385424'>
+
+    def test_query_handler_intent(db_session, mock_whatsapp, mock_llm, customer_repo):
+        # Mock Business
+        mock_business = MagicMock()
+        mock_business.id = 1
+        mock_business.name = "Barberia"
+        # Mock Repository get_by_business (called in __init__ or context)
+        # Actually QueryHandler context uses barber_repo.get_by_business(self.business.id)
+        # We should ensure barber_repo is mocked correctly before use, but handler init comes first.
+        db_session.query.return_value.filter.return_value.first.return_value = mock_business
+
+        handler = QueryHandler(db_session, "123")
+        handler.customer_repo = customer_repo
+
+        customer = Customer(id=1, phone="57300123", conversation_state="IDLE")
+
+        # Mock LLM
+        mock_llm.analyze_message.return_value = {"intent": "BOOKING", "reply": "Sure"}
+
+        handler.handle_message(customer, "Quiero una cita")
+
+>       assert customer.conversation_state == CustomerData.SELECT_BARBER  # Should transition to booking
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AssertionError: assert 'IDLE' == <CustomerData...ELECT_BARBER'>
+E
+E         - SELECT_BARBER
+E         + IDLE
+
+tests\test_handlers.py:86: AssertionError
+---------------------------- Captured stdout call -----------------------------
+2026-01-23 09:29:17,057 - app - INFO - LLM Analysis for 57300123: Intent=BOOK_APPOINTMENT
+Error sending WhatsApp message: 401 Client Error: Unauthorized for url: https://graph.facebook.com/v18.0/123/messages
+------------------------------ Captured log call ------------------------------
+INFO     app:query_handler.py:113 LLM Analysis for 57300123: Intent=BOOK_APPOINTMENT
+============================== warnings summary ===============================
+app\core\config.py:6
+  C:\Users\Sebastian Fals\OneDrive\Documentos\Works\sistema-citas\app\core\config.py:6: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class Settings(BaseSettings):
+
+app\core\database.py:33
+  C:\Users\Sebastian Fals\OneDrive\Documentos\Works\sistema-citas\app\core\database.py:33: MovedIn20Warning: The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+    Base = declarative_base()
+
+..\..\..\..\AppData\Roaming\Python\Python314\site-packages\google\genai\types.py:43
+  C:\Users\Sebastian Fals\AppData\Roaming\Python\Python314\site-packages\google\genai\types.py:43: DeprecationWarning: '_UnionGenericAlias' is deprecated and slated for removal in Python 3.17
+    VersionedUnionType = Union[builtin_types.UnionType, _UnionGenericAlias]
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_handlers.py::test_welcome_handler_menu - AssertionError: Ex...
+FAILED tests/test_handlers.py::test_booking_handler_flow - AssertionError: as...
+FAILED tests/test_handlers.py::test_query_handler_intent - AssertionError: as...
+======================== 3 failed, 3 warnings in 7.13s ========================
