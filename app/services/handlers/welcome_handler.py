@@ -37,6 +37,13 @@ class WelcomeHandler(BaseHandler):
         elif interactive_id == "menu_info":
             self._show_info(customer)
 
+        elif interactive_id.startswith("cancel_appt_"):
+            # Delegate cancellation to BookingHandler
+            from app.services.handlers.booking_handler import BookingHandler
+
+            booking_handler = BookingHandler(self.db, self.phone_number_id, self.business.id)
+            booking_handler.handle_interactive(customer, interactive_id, payload)
+
         else:
             # Fallback for unknown buttons in this context
             self._send_welcome_menu(customer)
@@ -101,12 +108,23 @@ class WelcomeHandler(BaseHandler):
         else:
             msg = "*Tus Citas Pendientes:*\n"
             for appt in appts:
-                # Format date?
-                # Simple strftime for now
                 date_str = appt.start_time.strftime("%d/%m %H:%M")
                 msg += f"- {date_str} con {appt.barber.name}\n"
 
             whatsapp_service.send_message(self.phone_number_id, customer.phone, msg)
+
+            # Send cancel buttons — one interactive message per appointment
+            for appt in appts:
+                date_str = appt.start_time.strftime("%d/%m %H:%M")
+                cancel_msg = f"Cancelar cita: {date_str} con {appt.barber.name}"
+                buttons = [
+                    {
+                        "id": f"cancel_appt_{appt.id}",
+                        "title": f"Cancelar {date_str}",
+                    }
+                ]
+                whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, cancel_msg, buttons)
+
             self._send_welcome_menu(customer, message_body="¿Algo más?")
 
     def _show_info(self, customer: Customer):
