@@ -1,6 +1,6 @@
 import hashlib
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 
 from app.core.config import settings
 
@@ -27,20 +27,45 @@ def encrypt(value: str) -> str:
 
 
 def decrypt(value: str) -> str:
-    """Decrypts a Fernet encrypted string."""
+    """Decrypts a Fernet encrypted string. Raises InvalidToken on failure."""
     if not value:
         return value
     if not _cipher_suite:
         raise ValueError("Encryption not configured (Missing ENCRYPTION_KEY)")
 
+    decrypted_bytes = _cipher_suite.decrypt(value.encode("utf-8"))
+    return decrypted_bytes.decode("utf-8")
+
+
+def validate_encryption_key() -> None:
+    """
+    Validates the ENCRYPTION_KEY at startup by performing an encrypt/decrypt
+    round-trip with a sentinel value. Raises ValueError if the key is missing,
+    invalid, or produces incorrect results.
+
+    Warning: Do NOT change ENCRYPTION_KEY after initial deployment.
+    Changing it will make all encrypted data unreadable.
+    """
+    if not settings.ENCRYPTION_KEY:
+        raise ValueError("ENCRYPTION_KEY is not set. Encryption not configured.")
+    if not _cipher_suite:
+        raise ValueError("ENCRYPTION_KEY is invalid or could not initialize Fernet.")
+
+    sentinel = "__KEY_CHECK__"
     try:
-        decrypted_bytes = _cipher_suite.decrypt(value.encode("utf-8"))
-        return decrypted_bytes.decode("utf-8")
-    except Exception:
-        # If decryption fails (wrong key, corrupted), return raw or raise?
-        # Returning raw might expose ciphertext to UI but prevents crash.
-        # For security, better to return Error or Empty.
-        return "[Error: Decryption Failed]"
+        encrypted = encrypt(sentinel)
+        decrypted = decrypt(encrypted)
+    except InvalidToken:
+        raise ValueError(
+            "ENCRYPTION_KEY validation FAILED. "
+            "Key mismatch — all encrypted data is unreadable. "
+            "Do NOT change ENCRYPTION_KEY after initial deployment."
+        )
+    except Exception as e:
+        raise ValueError(f"ENCRYPTION_KEY validation error: {e}")
+
+    if decrypted != sentinel:
+        raise ValueError("ENCRYPTION_KEY validation FAILED. " "Key mismatch — round-trip encryption check failed.")
 
 
 def hash_value(value: str) -> str:

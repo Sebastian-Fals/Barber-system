@@ -49,9 +49,19 @@ class BookingHandler(BaseHandler):
 
     def handle_message(self, customer: Customer, message_body: str) -> bool:
         """
-        Handles text input during booking (e.g., manual date or time entry).
+        Handles text input during booking (e.g., "cancelar" or manual entry).
         Returns True if handled, False if ignored (fallback to LLM).
         """
+        # Detect cancel request in any text form
+        if message_body and message_body.strip().lower() in ("cancelar", "cancel", "cancelar cita"):
+            self._update_state(customer, CustomerData.IDLE, {})
+            whatsapp_service.send_message(
+                self.phone_number_id,
+                customer.phone,
+                "Proceso cancelado. ¿En qué más puedo ayudarte?",
+            )
+            return True
+
         # For MVP Refactor, strictly use buttons for booking flow steps.
         # If user sends text, we treat it as unhandled so QueryHandler (LLM) can try to interpret it.
         return False

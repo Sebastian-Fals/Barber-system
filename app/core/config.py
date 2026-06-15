@@ -19,7 +19,8 @@ class Settings(BaseSettings):
     WEBHOOK_PUBLIC_URL: Optional[str] = None
 
     # Google
-    GOOGLE_APPLICATION_CREDENTIALS: str
+    GOOGLE_APPLICATION_CREDENTIALS: str = ""
+    GOOGLE_APPLICATION_CREDENTIALS_JSON: Optional[str] = None
     GOOGLE_API_KEY: Optional[str] = None
 
     # App Settings

@@ -12,22 +12,22 @@ class AppointmentRepository(BaseRepository[Appointment]):
         super().__init__(Appointment, db)
 
     def get_overlapping_confirmed(
-        self, barber_id: int, start_time: datetime, end_time: datetime
+        self, barber_id: int, start_time: datetime, end_time: datetime, for_update: bool = False
     ) -> Optional[Appointment]:
         """
         Checks for any CONFIRMED appointment that overlaps with the given range.
         Input params should be timezone-aware (UTC preferably).
+        When for_update=True, uses SELECT ... FOR UPDATE for atomic locking.
         """
-        return (
-            self.db.query(self.model)
-            .filter(
-                self.model.barber_id == barber_id,
-                self.model.status == AppointmentStatus.CONFIRMED,
-                self.model.start_time < end_time,
-                self.model.end_time > start_time,
-            )
-            .first()
+        query = self.db.query(self.model).filter(
+            self.model.barber_id == barber_id,
+            self.model.status == AppointmentStatus.CONFIRMED,
+            self.model.start_time < end_time,
+            self.model.end_time > start_time,
         )
+        if for_update:
+            query = query.with_for_update()
+        return query.first()
 
     def get_by_barber_and_date_range(self, barber_id: int, start: datetime, end: datetime) -> List[Appointment]:
         return (
