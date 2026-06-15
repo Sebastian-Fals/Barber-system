@@ -1,6 +1,8 @@
 from datetime import date
 from unittest.mock import MagicMock
 
+import pytest
+
 from app.features.appointments.service import BookingService
 from app.models.models import Appointment, AppointmentStatus, Customer
 
@@ -96,18 +98,31 @@ def test_create_appointment_success(db_session, barber_repo, appointment_repo, c
     appointment_repo.create.assert_called_once()
 
 
-def test_create_appointment_conflict(db_session, barber_repo, appointment_repo, customer_repo):
+def test_create_appointment_conflict(db_session, barber_repo, appointment_repo, customer_repo, business_repo):
     service = BookingService(db_session)
     service.barber_repo = barber_repo
     service.appointment_repo = appointment_repo
+    service.business_repo = business_repo
 
-    # Mock Existing Overlap
+    # Mock Barber
+    mock_barber = MagicMock()
+    mock_barber.business_id = 1
+    barber_repo.get_by_id.return_value = mock_barber
+
+    # Mock Business with valid schedule JSON
+    mock_business = MagicMock()
+    mock_business.schedule = '{"3": {"start": 9, "end": 18}}'  # Thursday
+    business_repo.get_by_id.return_value = mock_business
+
+    # Mock Existing Overlap → triggers SlotOccupiedError
     appointment_repo.get_overlapping_confirmed.return_value = Appointment(id=99)
 
     customer = Customer(id=1)
 
-    # Run
-    result = service.create_appointment(customer, barber_id=1, date_str="2023-10-27", time_str="10:00")
+    # Run — must raise SlotOccupiedError (TOCTOU protection)
+    from app.core.exceptions import SlotOccupiedError
 
-    assert result is None
+    with pytest.raises(SlotOccupiedError):
+        service.create_appointment(customer, barber_id=1, date_str="2023-10-27", time_str="10:00")
+
     appointment_repo.create.assert_not_called()
