@@ -21,13 +21,23 @@ class CalendarService:
         self._authenticate()
 
     def _authenticate(self):
-        if os.path.exists(settings.GOOGLE_APPLICATION_CREDENTIALS):
+        if settings.GOOGLE_APPLICATION_CREDENTIALS_JSON:
+            import json
+
+            try:
+                creds_dict = json.loads(settings.GOOGLE_APPLICATION_CREDENTIALS_JSON)
+                self.creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=self.SCOPES)
+                self.service = build("calendar", "v3", credentials=self.creds)
+            except json.JSONDecodeError as e:
+                print(f"FATAL: GOOGLE_APPLICATION_CREDENTIALS_JSON is not valid JSON: {e}")
+                raise
+        elif os.path.exists(settings.GOOGLE_APPLICATION_CREDENTIALS):
             self.creds = service_account.Credentials.from_service_account_file(
                 settings.GOOGLE_APPLICATION_CREDENTIALS, scopes=self.SCOPES
             )
             self.service = build("calendar", "v3", credentials=self.creds)
         else:
-            print("Warning: Google Credentials file not found. Calendar service will not work.")
+            print("Warning: GOOGLE_APPLICATION_CREDENTIALS_JSON not set. Calendar disabled.")
 
     def create_event(
         self,
