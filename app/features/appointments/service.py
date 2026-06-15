@@ -3,9 +3,11 @@ import json
 
 # import pytz # Unused
 from dateutil.parser import ParserError, parse
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-# from app.core.config import settings # Unused
+from app.core.config import settings
 from app.core.datetime_utils import get_local_timezone, now_local, to_local  # , to_utc
 from app.core.exceptions import BusinessCalendarError, ServiceValidationError, SlotOccupiedError
 from app.core.logging_config import logger
@@ -14,7 +16,7 @@ from app.features.business.barber_repository import BarberRepository
 from app.features.business.repository import BusinessRepository
 from app.features.calendar.service import calendar_service
 from app.features.customers.repository import CustomerRepository
-from app.models.models import AppointmentStatus, Business, Customer  # , Appointment, Barber
+from app.models.models import AppointmentStatus, Business, Customer
 
 
 class BookingService:
@@ -201,19 +203,46 @@ class BookingService:
             logger.error(f"Barber {barber.id} has no associated business")
             raise ServiceValidationError("Data corruption: Barber has no business")
 
-        # 1. Validate Business Hours
+        # 1. Validate Business Hours (outside transaction — cheap check)
         start_h, end_h = self.get_business_hours(business, start_time.date())
         if start_time.hour < start_h or start_time.hour >= end_h:
             logger.warning(f"Attempt to book outside business hours: {start_time}")
             raise BusinessCalendarError("El horario solicitado está fuera de horas laborales.")
 
-        # 2. Validate Availability (Double Check)
-        existing = self.appointment_repo.get_overlapping_confirmed(barber_id, start_time, end_time)
-        if existing:
-            logger.warning(f"Slot overlapping with local appointment {existing.id}")
-            raise SlotOccupiedError("El horario seleccionado ya está ocupado.")
+        # 2. Atomic availability check + insert (TOCTOU protection)
+        # PostgreSQL: SELECT ... FOR UPDATE locks matching rows
+        # SQLite: BEGIN IMMEDIATE prevents concurrent writes to the table
+        try:
+            if "sqlite" in settings.DATABASE_URL:
+                self.db.execute(text("BEGIN IMMEDIATE"))
 
-        # 3. Calendar Sync
+            existing = self.appointment_repo.get_overlapping_confirmed(barber_id, start_time, end_time, for_update=True)
+            if existing:
+                self.db.rollback()
+                logger.warning(f"Slot already taken: barber={barber_id} {start_time}")
+                raise SlotOccupiedError("Este horario ya no está disponible. Por favor elegí otro.")
+
+            # Slot is free → insert within the same locked transaction
+            appt_data = {
+                "customer_id": customer.id,
+                "barber_id": barber.id,
+                "business_id": barber.business_id,
+                "start_time": start_time,
+                "end_time": end_time,
+                "status": AppointmentStatus.CONFIRMED.value,
+                "google_barber_event_id": None,
+                "google_business_event_id": None,
+            }
+            new_appointment = self.appointment_repo.create(appt_data)
+            self.db.commit()
+        except (OperationalError, Exception) as e:
+            self.db.rollback()
+            if isinstance(e, SlotOccupiedError):
+                raise
+            logger.error(f"Lock/transaction error: {e}")
+            raise SlotOccupiedError("Intenta de nuevo en un momento. El horario pudo haber sido tomado.")
+
+        # 3. Calendar Sync (after commit — non-critical, best-effort)
         barber_event_id = None
         business_event_id = None
 
@@ -239,19 +268,18 @@ class BookingService:
             except Exception as e:
                 logger.error(f"Error creating business calendar event: {e}")
 
-        appt_data = {
-            "customer_id": customer.id,
-            "barber_id": barber.id,
-            "business_id": barber.business_id,
-            "start_time": start_time,
-            "end_time": end_time,
-            "status": AppointmentStatus.CONFIRMED.value,
-            "google_barber_event_id": barber_event_id,
-            "google_business_event_id": business_event_id,
-        }
+        # Update the appointment with calendar event IDs (post-commit, best-effort)
+        if barber_event_id or business_event_id:
+            try:
+                if barber_event_id:
+                    new_appointment.google_barber_event_id = barber_event_id
+                if business_event_id:
+                    new_appointment.google_business_event_id = business_event_id
+                self.db.commit()
+            except Exception as e:
+                logger.error(f"Error updating calendar event IDs: {e}")
+                self.db.rollback()
 
-        # Use repository create
-        new_appointment = self.appointment_repo.create(appt_data)
         return new_appointment
 
     def cancel_appointment(self, appointment_id: int):
