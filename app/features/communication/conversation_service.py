@@ -16,18 +16,19 @@ class ConversationService:
     It delegates logic to specialized Handlers based on conversation state and input type.
     """
 
-    def __init__(self, db: Session, phone_number_id: str):
+    def __init__(self, db: Session, phone_number_id: str, business_id: int):
         self.db = db
         self.phone_number_id = phone_number_id
+        self.business_id = business_id
 
         # Repositories
         self.customer_repo = CustomerRepository(db)
         self.business_repo = BusinessRepository(db)
 
-        # Handlers
-        self.welcome_handler = WelcomeHandler(db, phone_number_id)
-        self.booking_handler = BookingHandler(db, phone_number_id)
-        self.query_handler = QueryHandler(db, phone_number_id)
+        # Handlers — propagate business_id so they don't re-resolve it
+        self.welcome_handler = WelcomeHandler(db, phone_number_id, business_id)
+        self.booking_handler = BookingHandler(db, phone_number_id, business_id)
+        self.query_handler = QueryHandler(db, phone_number_id, business_id)
 
     def handle_incoming_message(
         self, from_number: str, message_body: str, message_type: str = "text", interactive_id: str = None
@@ -35,11 +36,13 @@ class ConversationService:
         """
         Main entry point. Routes the message to the appropriate handler.
         """
-        # 1. Get or Create Customer
-        customer = self.customer_repo.get_by_phone(from_number)
+        # 1. Get or Create Customer (scoped by business_id)
+        customer = self.customer_repo.get_by_phone(from_number, self.business_id)
         if not customer:
             # Create with default name "Usuario"
-            customer = self.customer_repo.create({"phone": from_number, "name": "Usuario"})
+            customer = self.customer_repo.create(
+                {"phone": from_number, "name": "Usuario", "business_id": self.business_id}
+            )
             # Initiate Name Collection Flow
             self.customer_repo.update_state(customer, CustomerData.WAITING_NAME)
             from app.core.i18n import message_loader
@@ -130,7 +133,7 @@ class ConversationService:
             self.customer_repo.update_state(customer, CustomerData.IDLE)
 
             # Check AI
-            business = self.business_repo.get_by_phone_number_id(self.phone_number_id)
+            business = self.business_repo.get_by_id(self.business_id)
             enable_ai = business.ai_enabled if business else False
 
             if enable_ai:
@@ -144,7 +147,7 @@ class ConversationService:
             return
 
         # 3. Check AI Status (Global Context)
-        business = self.business_repo.get_by_phone_number_id(self.phone_number_id)
+        business = self.business_repo.get_by_id(self.business_id)
         enable_ai = business.ai_enabled if business else False
 
         if enable_ai:

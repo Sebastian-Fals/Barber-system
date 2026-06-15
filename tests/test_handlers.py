@@ -19,7 +19,7 @@ def test_welcome_output(mock_ws, mock_loader):
     db_session.query.return_value.filter.return_value.first.return_value = mock_business
 
     # Init Handler
-    handler = WelcomeHandler(db_session, "123")
+    handler = WelcomeHandler(db_session, "123", 1)
 
     # Mock Customer
     customer = Customer(id=1, phone="555", name="Joe")

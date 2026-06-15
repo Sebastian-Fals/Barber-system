@@ -12,12 +12,12 @@ from app.services.handlers.base_handler import BaseHandler
 
 
 class WelcomeHandler(BaseHandler):
-    def __init__(self, db: Session, phone_number_id: str):
-        super().__init__(db, phone_number_id)
+    def __init__(self, db: Session, phone_number_id: str, business_id: int):
+        super().__init__(db, phone_number_id, business_id)
         self.appt_repo = AppointmentRepository(db)
         self.barber_repo = BarberRepository(db)
-        # We need business info for i18n context
-        self.business = db.query(Business).filter(Business.phone_number_id == phone_number_id).first()
+        # Resolve business by ID (already known from webhook resolution)
+        self.business = db.query(Business).filter(Business.id == business_id).first()
 
     def handle_message(self, customer: Customer, message_body: str) -> None:
         """
