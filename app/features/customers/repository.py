@@ -11,8 +11,15 @@ class CustomerRepository(BaseRepository[Customer]):
     def __init__(self, db: Session):
         super().__init__(Customer, db)
 
-    def get_by_phone(self, phone: str) -> Optional[Customer]:
-        return self.db.query(self.model).filter(self.model.phone_hash == hash_value(phone)).first()
+    def get_by_phone(self, phone: str, business_id: int) -> Optional[Customer]:
+        return (
+            self.db.query(self.model)
+            .filter(
+                self.model.phone_hash == hash_value(phone),
+                self.model.business_id == business_id,
+            )
+            .first()
+        )
 
     def update_state(self, customer: Customer, new_state: str) -> Customer:
         customer.conversation_state = new_state
