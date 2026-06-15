@@ -15,7 +15,12 @@ from app.models.models import Barber, Business
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
+    # Startup — validate encryption key first (crash early if invalid)
+    from app.core.security import validate_encryption_key
+
+    validate_encryption_key()
+    logger.info("Encryption key validated successfully")
+
     start_scheduler()
 
     # --- Subscribe to Google Calendar Webhooks ---
