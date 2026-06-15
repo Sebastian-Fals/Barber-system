@@ -142,7 +142,7 @@ class QueryHandler(BaseHandler):
             extracted = analysis.get("extracted", {})
             self._handle_cancellation_intent(customer, reply, extracted)
 
-        if intent == "CANCEL_CONVERSATION":
+        elif intent == "CANCEL_CONVERSATION":
             # Explicit Reset/Stop
             if reply:
                 self._send_and_log(customer, reply)
@@ -183,6 +183,48 @@ class QueryHandler(BaseHandler):
             else:
                 self._send_and_log(customer, "¡Gracias! He actualizado tu nombre.")
 
+        elif intent == "PROVIDE_NAME":
+            # User is providing their name
+            extracted = analysis.get("extracted", {})
+            new_name = extracted.get("customer_name")
+
+            invalid_names = [
+                "hola",
+                "hi",
+                "bot",
+                "usuario",
+                "si",
+                "no",
+                "cancelar",
+                "menu",
+                "dia",
+                "tarde",
+                "noche",
+            ]
+            if new_name and new_name.lower().strip() not in invalid_names and len(new_name) > 2:
+                self.customer_repo.update(customer, {"name": new_name.title()})
+                if reply:
+                    self._send_and_log(customer, reply)
+                else:
+                    self._send_and_log(
+                        customer,
+                        f"¡Gracias {new_name.title()}! He actualizado tu nombre. ¿En qué puedo ayudarte?",
+                    )
+            else:
+                logger.warning(f"Ignored invalid name update attempt: {new_name}")
+                if reply:
+                    self._send_and_log(customer, reply)
+
+        elif intent == "FALLBACK":
+            # LLM couldn't determine intent — provide helpful fallback
+            if reply:
+                self._send_and_log(customer, reply)
+            else:
+                self._send_and_log(
+                    customer,
+                    "No entendí bien tu mensaje. ¿Podrías usar el menú o ser más específico? 🤔",
+                )
+
         elif intent == "CHITCHAT":
             # Just reply directly ("Hola", "Gracias", Info del negocio)
             # Ana answers directly now.
@@ -199,8 +241,12 @@ class QueryHandler(BaseHandler):
                 self._send_and_log(customer, message_loader.get("error_fallback"))
 
     def handle_interactive(self, customer: Customer, interactive_id: str, payload: Dict[str, Any]) -> None:
-        # QueryHandler normally doesn't handle buttons unless we add "Are you sure?" flows here.
-        pass
+        # Delegate all booking-related button clicks to BookingHandler
+        # so AI and non-AI modes share the same interactive handling.
+        from app.services.handlers.booking_handler import BookingHandler
+
+        booking_handler = BookingHandler(self.db, self.phone_number_id, self.business_id)
+        booking_handler.handle_interactive(customer, interactive_id, payload)
 
     def _build_llm_context(self, customer: Customer) -> Dict[str, Any]:
         """
@@ -254,8 +300,9 @@ class QueryHandler(BaseHandler):
 
     def _smart_booking_transition(self, customer: Customer, extracted: Dict[str, Any], reply_text: str):
         """
-        Transition to booking flow, skipping steps if entities are present.
-        Uses reply_text as the header for the next menu if applicable.
+        Transition to booking flow using interactive buttons, same as non-AI mode.
+        Flow order: SERVICE → BARBER → DATE → SLOT → CONFIRM.
+        Entity extraction skips steps when info is already known.
         """
         import json
 
@@ -266,7 +313,6 @@ class QueryHandler(BaseHandler):
         selected_barber = None
         if barber_name:
             barbers = self.barber_repo.get_by_business(self.business.id) if self.business else []
-            # Fuzzy match or exact match
             for b in barbers:
                 if (
                     b.name.strip().lower() in barber_name.strip().lower()
@@ -276,9 +322,6 @@ class QueryHandler(BaseHandler):
                     break
 
         # Prepare current data
-        # If we are starting from IDLE, we should clear old booking data to avoid "ghost" selections.
-        # But we might want to keep other non-booking data if it exists (unlikely for now).
-        # Safest is to reset if IDLE.
         try:
             if customer.conversation_state == CustomerData.IDLE:
                 data = {}
@@ -287,153 +330,141 @@ class QueryHandler(BaseHandler):
         except (ValueError, TypeError):
             data = {}
 
-        # 2. Logic to Jump Steps
-        next_state = CustomerData.SELECT_BARBER
-
         if selected_barber:
-            # Check if we are changing barber?
-            # Or simply, if a barber is explicitly named, we should probably reset the date
-            # unless the date is ALSO explicitly named in this message.
-            # This prevents specific case: User selected "Today" with Barber A, then changed mind and said
-            # "With Barber B" (implying start over for date?)
-            # Or simpler: "Context Switch".
-
-            # If we extracted a barber, and we did NOT extract a date, we should clear any previous date
-            # to force the "When?" question.
             if not date_str:
                 data.pop("date", None)
                 data.pop("selected_date", None)
+            data["barber_id"] = selected_barber.id
 
-            data["barber_id"] = selected_barber.id  # Use consistent key "barber_id"
-            data["selected_barber_id"] = selected_barber.id  # Keep compatibility if needed
-
-        # 3. Determine Goal State based on unified Data
-        # Order: Barber -> Date -> Slot
-        next_state = CustomerData.SELECT_BARBER
-
-        has_barber = "barber_id" in data or "selected_barber_id" in data
-        has_date = "date" in data or "selected_date" in data
-
-        # If we have extracted a new date, update it
         if date_str:
             data["date"] = date_str
-            data["selected_date"] = date_str
-            has_date = True
 
-        if has_barber:
+        # Determine goal state based on what we have
+        # Order: SERVICE → BARBER → DATE → SLOT → CONFIRM
+        has_service = "service_id" in data
+        has_barber = "barber_id" in data
+        has_date = "date" in data
+        has_time = "time" in data
+
+        if not has_service:
+            next_state = CustomerData.SELECT_SERVICE
+        elif not has_barber:
+            next_state = CustomerData.SELECT_BARBER
+        elif not has_date:
             next_state = CustomerData.SELECT_DATE
-            if has_date:
-                next_state = CustomerData.SELECT_SLOT
+        elif not has_time:
+            next_state = CustomerData.SELECT_SLOT
+        else:
+            next_state = CustomerData.CONFIRM_BOOKING
 
-        # Save data
+        # Save data and state
         self.customer_repo.update_data(customer, json.dumps(data))
         self.customer_repo.update_state(customer, next_state)
 
-        # 3. Trigger Handler for Next State
-        # We need to manually construct the UI for the target state
+        # Show interactive buttons for the target state
+        header = reply_text if reply_text else ""
 
-        if next_state == CustomerData.SELECT_BARBER:
-            # Show Barber List (Text)
-            msg_body = reply_text if reply_text else message_loader.get("booking_ask_barber")
-            barbers = self.barber_repo.get_by_business(self.business.id) if self.business else []
+        if next_state == CustomerData.SELECT_SERVICE:
+            self._show_service_buttons(customer, header)
 
-            if barbers:
-                barber_list = "\n".join([f"- {b.name}" for b in barbers])
-                msg_body += f"\n\nBarberos disponibles:\n{barber_list}"
-
-            whatsapp_service.send_message(self.phone_number_id, customer.phone, msg_body)
+        elif next_state == CustomerData.SELECT_BARBER:
+            self._show_barber_buttons(customer, header)
 
         elif next_state == CustomerData.SELECT_DATE:
-            # Ask for Date (Text)
-            msg_body = reply_text if reply_text else message_loader.get("booking_ask_date")
-            whatsapp_service.send_message(self.phone_number_id, customer.phone, msg_body)
+            self._show_date_buttons(customer, header)
 
         elif next_state == CustomerData.SELECT_SLOT:
-            # Handle Custom Time or Show Slots (Text Only)
-            time_str = extracted.get("time")  # extracted HH:MM
+            self._show_slot_buttons(customer, data, header)
 
-            # 1. Try to Validate Custom Time if available
-            if time_str:
-                try:
-                    import datetime
+        elif next_state == CustomerData.CONFIRM_BOOKING:
+            self._show_confirmation(customer, data, header)
 
-                    extracted_time = datetime.datetime.strptime(time_str, "%H:%M").time()
+    def _show_service_buttons(self, customer: Customer, header: str = ""):
+        """Send interactive service selection buttons (same as non-AI mode)."""
+        from app.features.business.service_repository import ServiceRepository
 
-                    target_date_str = date_str if date_str else data.get("date")
-                    if target_date_str:
-                        target_date_obj = datetime.datetime.strptime(target_date_str, "%Y-%m-%d").date()
+        svc_repo = ServiceRepository(self.db)
+        services = svc_repo.get_by_business(self.business_id)
+        msg = header or message_loader.get("booking_ask_service")
+        buttons = [{"id": f"service_{s.id}", "title": s.name} for s in services[:3]]
+        buttons.append({"id": "cancel_flow", "title": "Cancelar"})
+        whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
 
-                        is_free = self.booking_service.is_custom_slot_available(
-                            data["barber_id"], target_date_obj, extracted_time
-                        )
+    def _show_barber_buttons(self, customer: Customer, header: str = ""):
+        """Send interactive barber selection buttons."""
+        barbers = self.barber_repo.get_by_business(self.business_id) if self.business_id else []
+        msg = header or message_loader.get("booking_ask_barber")
+        buttons = [{"id": f"barber_{b.id}", "title": b.name} for b in barbers[:3]]
+        buttons.append({"id": "cancel_flow", "title": "Cancelar"})
+        whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
 
-                        if is_free:
-                            # Success! Skip Slot Menu and Go to Confirmation
-                            data["time"] = time_str
-                            self.customer_repo.update_data(customer, json.dumps(data))
-                            self.customer_repo.update_state(customer, CustomerData.CONFIRM_BOOKING)
+    def _show_date_buttons(self, customer: Customer, header: str = ""):
+        """Send interactive date selection buttons."""
+        msg = header or message_loader.get("booking_ask_specific_date", barber_name="")
+        buttons = [
+            {"id": "date_today", "title": message_loader.get("btn_today")},
+            {"id": "date_tomorrow", "title": message_loader.get("btn_tomorrow")},
+            {"id": "cancel_flow", "title": "Cancelar"},
+        ]
+        whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
 
-                            # Text Confirmation
-                            from app.core.datetime_utils import format_12h_time, format_spanish_date
+    def _show_slot_buttons(self, customer: Customer, data: dict, header: str = ""):
+        """Send interactive slot selection buttons."""
+        import datetime
 
-                            barber = self.barber_repo.get_by_id(data["barber_id"])
-                            nice_date = format_spanish_date(target_date_str)
-                            nice_time = format_12h_time(time_str)
+        try:
+            target_date_str = data.get("date")
+            if not target_date_str:
+                raise ValueError("No date found")
+            target_date_obj = datetime.datetime.strptime(target_date_str, "%Y-%m-%d").date()
+            slots = self.booking_service.get_available_slots(data["barber_id"], target_date_obj)
 
-                            msg = (
-                                f"Perfecto. Resumen:\n📅 Fecha: {nice_date}\n⏰ Hora: {nice_time}\n"
-                                f"💈 Barbero: {barber.name}\n\n¿Estás de acuerdo? (Responde 'Sí' o 'Más tarde')"
-                            )
-                            whatsapp_service.send_message(self.phone_number_id, customer.phone, msg)
-                            return  # Done, flow advanced.
-                        else:
-                            # Time not free. Inform user (continue to show slots)
-                            whatsapp_service.send_message(
-                                self.phone_number_id, customer.phone, f"Lo siento, las {time_str} ya está ocupado."
-                            )
-                except Exception as e:
-                    logger.error(f"Custom time check failed: {e}")
-
-            # 2. Fallback: Show Standard Slots (Text List)
-            try:
-                import datetime
-
-                target_date_str = date_str if date_str else data.get("date")
-                if not target_date_str:
-                    raise ValueError("No date found")
-
-                target_date_obj = datetime.datetime.strptime(target_date_str, "%Y-%m-%d").date()
-
-                # Fetch available slots
-                slots = self.booking_service.get_available_slots(data["barber_id"], target_date_obj)
-
-                if not slots:
-                    whatsapp_service.send_message(
-                        self.phone_number_id,
-                        customer.phone,
-                        "No hay horarios disponibles para esa fecha. ¿Te va bien otro día?",
-                    )
-                else:
-                    # Limit to reasonable amount for text (e.g. 10)
-                    # Format to 12h AM/PM
-                    from app.core.datetime_utils import format_12h_time, format_spanish_date
-
-                    display_slots = [format_12h_time(s) for s in slots[:12]]
-                    slots_text = ", ".join(display_slots)
-
-                    nice_date = format_spanish_date(target_date_obj)
-
-                    msg = (
-                        f"Tengo estos horarios libres para el {nice_date}:\n{slots_text}\n\n"
-                        f"¿Cuál prefieres? (O escríbeme otra hora)"
-                    )
-                    whatsapp_service.send_message(self.phone_number_id, customer.phone, msg)
-
-            except Exception as e:
-                logger.error(f"Error showing text slots: {e}")
+            if not slots:
                 whatsapp_service.send_message(
-                    self.phone_number_id, customer.phone, "Por favor, indícame para qué fecha buscas."
+                    self.phone_number_id,
+                    customer.phone,
+                    "No hay horarios disponibles para esa fecha. ¿Te va bien otro día?",
                 )
+                return
+
+            msg = header or message_loader.get(
+                "booking_ask_time_header",
+                date=target_date_obj.strftime("%d/%m"),
+            )
+            buttons = []
+            for slot in slots[:3]:
+                time_str = slot.strftime("%H:%M")
+                display = slot.strftime("%I:%M%p").lower().lstrip("0")
+                buttons.append({"id": f"time_{time_str}", "title": display})
+
+            buttons.append({"id": "cancel_flow", "title": "Cancelar"})
+            whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
+
+        except Exception as e:
+            logger.error(f"Error showing slot buttons: {e}")
+            whatsapp_service.send_message(
+                self.phone_number_id,
+                customer.phone,
+                "Por favor, indícame para qué fecha buscas.",
+            )
+
+    def _show_confirmation(self, customer: Customer, data: dict, header: str = ""):
+        """Send interactive confirmation buttons."""
+        barber = self.barber_repo.get_by_id(data.get("barber_id"))
+        barber_name = barber.name if barber else "?"
+
+        msg = header or message_loader.get(
+            "booking_summary",
+            barber_name=barber_name,
+            date=data.get("date", "?"),
+            time=data.get("time", "?"),
+        )
+        buttons = [
+            {"id": "confirm_yes", "title": message_loader.get("btn_yes")},
+            {"id": "confirm_no", "title": message_loader.get("btn_no")},
+            {"id": "cancel_flow", "title": "Cancelar"},
+        ]
+        whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
 
     def _handle_my_appointments(self, customer: Customer, reply_text: str):
         """
