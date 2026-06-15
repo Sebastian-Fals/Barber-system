@@ -13,7 +13,6 @@ from app.models.models import (  # noqa: F401 — register all models for autoge
     Business,
     ConversationHistory,
     Customer,
-    MessageBuffer,
     ProcessedMessage,
 )
 

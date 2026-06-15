@@ -1,3 +1,6 @@
+import json
+import time
+
 from sqlalchemy.orm import Session
 
 from app.core.logging_config import logger
@@ -50,6 +53,11 @@ class ConversationService:
             whatsapp_service.send_message(self.phone_number_id, from_number, message_loader.get("welcome_ask_name"))
             return
 
+        # 2. Cooldown check: drop rapid-fire duplicates from same user (<500ms)
+        if self._should_cooldown(customer):
+            logger.debug(f"Cooldown active for customer {customer.id} — dropping message")
+            return
+
         try:
             if message_type == "text":
                 self._route_text_message(customer, message_body)
@@ -62,6 +70,24 @@ class ConversationService:
         except Exception as e:
             logger.error(f"Error handling message for {from_number}: {e}", exc_info=True)
             whatsapp_service.send_message(self.phone_number_id, from_number, "Lo siento, tuve un error interno. 😔")
+
+    def _should_cooldown(self, customer: Customer) -> bool:
+        """
+        Checks if a message from this customer should be dropped due to 500ms cooldown.
+
+        Returns True if cooldown is active (message should be dropped).
+        Side effect: updates _last_msg_ts in conversation_data when cooldown is NOT active.
+        """
+        data = json.loads(customer.conversation_data or "{}")
+        last_msg_ts = data.get("_last_msg_ts", 0)
+        now = time.time()
+        if (now - last_msg_ts) < 0.5:
+            return True
+        data["_last_msg_ts"] = now
+        customer.conversation_data = json.dumps(data)
+        # Persist the timestamp update
+        self.customer_repo.update_data(customer, customer.conversation_data)
+        return False
 
     def _route_text_message(self, customer: Customer, message_body: str):
         text = message_body.lower().strip()

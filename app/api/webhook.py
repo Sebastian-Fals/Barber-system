@@ -11,7 +11,6 @@ from app.core.logging_config import logger
 from app.features.business.repository import BusinessRepository
 from app.features.communication.conversation_service import ConversationService
 from app.models.models import ProcessedMessage
-from app.services.buffer_service import BufferService
 
 router = APIRouter()
 
@@ -20,22 +19,17 @@ async def process_background_message(
     phone_number_id: str, from_number: str, msg_body: str, msg_type: str, interactive_id: str, business_id: int
 ):
     try:
-        if msg_type == "text":
-            # Route text messages through the 10s buffer
-            await BufferService.add_message(from_number, msg_body, phone_number_id, business_id)
-        else:
-            # Route interactive/media messages directly (bypass buffer)
-            # Create a NEW session for the background task
+        # Direct processing — no BufferService debounce.
+        # All message types follow the same path.
+        def _process_direct():
+            db = SessionLocal()
+            try:
+                service = ConversationService(db, phone_number_id, business_id)
+                service.handle_incoming_message(from_number, msg_body, msg_type, interactive_id)
+            finally:
+                db.close()
 
-            def _process_direct():
-                db = SessionLocal()
-                try:
-                    service = ConversationService(db, phone_number_id, business_id)
-                    service.handle_incoming_message(from_number, msg_body, msg_type, interactive_id)
-                finally:
-                    db.close()
-
-            await run_in_threadpool(_process_direct)
+        await run_in_threadpool(_process_direct)
 
     except asyncio.CancelledError:
         logger.warning(f"Task cancelled for {from_number} (Server Shutdown/Reload)")
