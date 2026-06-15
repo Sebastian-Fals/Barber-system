@@ -102,7 +102,7 @@ class WelcomeHandler(BaseHandler):
             whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
             return
 
-        msg = message_loader.get("booking_ask_service", default="Elige el servicio:")
+        msg = message_loader.get("booking_ask_service")
         buttons = [{"id": f"service_{s.id}", "title": s.name} for s in services[:3]]
         # Always include Cancel button
         buttons.append({"id": "cancel_flow", "title": "Cancelar"})
