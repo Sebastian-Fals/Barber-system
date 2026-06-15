@@ -50,6 +50,17 @@ class Barber(Base):
     appointments = relationship("Appointment", back_populates="barber")
 
 
+class Service(Base):
+    __tablename__ = "services"
+
+    id = Column(Integer, primary_key=True, index=True)
+    business_id = Column(Integer, ForeignKey("businesses.id"), nullable=False)
+    name = Column(String, nullable=False)
+    duration_minutes = Column(Integer, default=60)
+
+    business = relationship("Business")
+
+
 class CustomerData(str, enum.Enum):
     # Helps prevent typos in state names
     IDLE = "IDLE"

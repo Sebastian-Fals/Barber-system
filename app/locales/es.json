@@ -7,6 +7,7 @@
     "menu_info": "ℹ️ Info y Ayuda",
     "info_message": "ℹ️ *Información de {business_name}*\n\n📍 Dirección: Calle Falsa 123\n📞 Teléfono: {phone}\n⏰ Horario: Lunes a Sábado, 9am - 8pm",
     "booking_ask_barber": "¡Claro! ✂️ ¿Con qué profesional te gustaría atenderte hoy?",
+    "booking_ask_service": "¡Perfecto! 💈 ¿Qué servicio te interesa?",
     "booking_ask_date": "Perfecto. 📅 ¿Qué día te queda mejor?",
     "booking_ask_specific_date": "Has elegido a *{barber_name}*. ¿Para qué día?",
     "booking_ask_time_header": "Horarios para el {date}:",
