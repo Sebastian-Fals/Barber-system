@@ -56,7 +56,7 @@ Chain strategy: feature-branch-chain
 
 ## Fase 3: Message Processing (~120-150 líneas)
 
-- [ ] 3.1 **RED** `tests/unit/api/test_webhook.py`: mensaje procesado sin `BufferService.add_message`, dedup vía `ProcessedMessage` sigue funcionando; `tests/unit/features/communication/test_conversation_service.py`: cooldown 500ms bloquea mensajes consecutivos <500ms
-- [ ] 3.2 **GREEN** `app/api/webhook.py`: `process_background_message` procesa directo sin `BufferService`; `app/features/communication/conversation_service.py`: cooldown check 500ms en `handle_incoming_message`
-- [ ] 3.3 **GREEN** `app/services/buffer_service.py`: eliminar archivo; `app/models/models.py`: eliminar `MessageBuffer` model; limpiar imports huérfanos en webhook y conversation_service
-- [ ] 3.4 **GREEN** Documentar key immutability: `ENCRYPTION_KEY` no debe cambiarse post-deploy; limpiar dead code y comentarios obsoletos
+- [x] 3.1 **RED** `tests/unit/api/test_webhook.py`: mensaje procesado sin `BufferService.add_message`, dedup vía `ProcessedMessage` sigue funcionando; `tests/unit/features/communication/test_conversation_service.py`: cooldown 500ms bloquea mensajes consecutivos <500ms
+- [x] 3.2 **GREEN** `app/api/webhook.py`: `process_background_message` procesa directo sin `BufferService`; `app/features/communication/conversation_service.py`: cooldown check 500ms en `handle_incoming_message`
+- [x] 3.3 **GREEN** `app/services/buffer_service.py`: eliminar archivo; `app/models/models.py`: eliminar `MessageBuffer` model; limpiar imports huérfanos en webhook y conversation_service
+- [x] 3.4 **GREEN** Documentar key immutability: `ENCRYPTION_KEY` no debe cambiarse post-deploy; limpiar dead code y comentarios obsoletos
