@@ -150,14 +150,3 @@ class ConversationHistory(Base):
 
     customer = relationship("Customer")
     business = relationship("Business")
-
-
-class MessageBuffer(Base):
-    __tablename__ = "message_buffers"
-
-    customer_id = Column(Integer, ForeignKey("customers.id"), primary_key=True)
-    content = Column(EncryptedString, default="")
-    updated_at = Column(UTCDateTime, default=lambda: datetime.now(pytz.UTC))
-    is_running = Column(Boolean, default=False)
-
-    customer = relationship("Customer")
