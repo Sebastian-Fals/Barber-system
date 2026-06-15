@@ -2,10 +2,12 @@ import datetime
 import json
 
 # import pytz # Unused
+from dateutil.parser import ParserError, parse
 from sqlalchemy.orm import Session
 
 # from app.core.config import settings # Unused
 from app.core.datetime_utils import get_local_timezone, now_local, to_local  # , to_utc
+from app.core.exceptions import BusinessCalendarError, ServiceValidationError, SlotOccupiedError
 from app.core.logging_config import logger
 from app.features.appointments.repository import AppointmentRepository
 from app.features.business.barber_repository import BarberRepository
@@ -160,9 +162,12 @@ class BookingService:
         return slots
 
     def create_appointment(self, customer: Customer, barber_id: int, date_str: str, time_str: str):
+        # Dependencies: Import at top level in real code, but here we assume imports are added.
+        # Check imports for this chunk.
+
         barber = self.barber_repo.get_by_id(barber_id)
         if not barber:
-            return None
+            raise ServiceValidationError(f"Barber {barber_id} not found")
 
         # Robust Parsing
         try:
@@ -170,27 +175,18 @@ class BookingService:
             if isinstance(date_str, datetime.date):
                 target_date = date_str
             else:
-                target_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+                target_date = parse(str(date_str)).date()
 
             # Time Parsing
             target_time = None
             if isinstance(time_str, datetime.time):
                 target_time = time_str
             else:
-                # Try formats: HH:MM:SS, HH:MM, HH:MM AM/PM
-                formats = ["%H:%M:%S", "%H:%M", "%I:%M %p", "%I:%M%p"]
-                for fmt in formats:
-                    try:
-                        target_time = datetime.datetime.strptime(str(time_str).strip(), fmt).time()
-                        break
-                    except ValueError:
-                        continue
-                if not target_time:
-                    raise ValueError(f"Invalid time format: {time_str}")
+                target_time = parse(str(time_str)).time()
 
-        except ValueError as e:
-            logger.error(f"Date/Time parsing error in create_appointment: {e}")
-            return None
+        except (ValueError, ParserError) as e:
+            logger.error(f"Date/Time parsing error: {e}")
+            raise ServiceValidationError(f"Invalid date/time format: {date_str} {time_str}")
 
         # Construct aware datetime
         local_tz = get_local_timezone()
@@ -203,19 +199,19 @@ class BookingService:
         business = self.business_repo.get_by_id(barber.business_id)
         if not business:
             logger.error(f"Barber {barber.id} has no associated business")
-            return None
+            raise ServiceValidationError("Data corruption: Barber has no business")
 
         # 1. Validate Business Hours
         start_h, end_h = self.get_business_hours(business, start_time.date())
         if start_time.hour < start_h or start_time.hour >= end_h:
             logger.warning(f"Attempt to book outside business hours: {start_time}")
-            return None  # Or raise specific error
+            raise BusinessCalendarError("El horario solicitado está fuera de horas laborales.")
 
         # 2. Validate Availability (Double Check)
         existing = self.appointment_repo.get_overlapping_confirmed(barber_id, start_time, end_time)
         if existing:
             logger.warning(f"Slot overlapping with local appointment {existing.id}")
-            return None
+            raise SlotOccupiedError("El horario seleccionado ya está ocupado.")
 
         # 3. Calendar Sync
         barber_event_id = None
@@ -227,6 +223,12 @@ class BookingService:
                 barber_event_id = calendar_service.create_event(barber.calendar_id, summary, start_time, end_time)
             except Exception as e:
                 logger.error(f"Error creating barber calendar event: {e}")
+                # We could raise error here if strictly required, or fail soft.
+                # Current logic was soft fail. Let's keep it soft but logged, OR raise BusinessCalendarError?
+                # If calendar fails, double booking is possible if we fallback to local only.
+                # Safer: Fail if calendar is required.
+                # But let's stick to fail soft for now as it's an external dependency.
+                pass
 
         # Try to sync with Business Calendar (Duplicate Event Strategy due to Service Account 403 on Attendees)
         if business.calendar_id:
@@ -240,6 +242,7 @@ class BookingService:
         appt_data = {
             "customer_id": customer.id,
             "barber_id": barber.id,
+            "business_id": barber.business_id,
             "start_time": start_time,
             "end_time": end_time,
             "status": AppointmentStatus.CONFIRMED.value,
