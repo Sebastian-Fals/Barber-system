@@ -1,0 +1,65 @@
+schema: spec-driven
+
+context: |
+  Tech stack: Python 3.10+, FastAPI 0.128, SQLAlchemy 2.0, Uvicorn 0.40
+  Database: PostgreSQL (Neon/Supabase) with SQLite fallback
+  Architecture: Feature-based (app/features/{domain}/) with handler pattern
+  Integrations: WhatsApp Cloud API, Google Calendar API, Google Gemini LLM
+  Testing: pytest 9.0.2, unit tests (MagicMock), no coverage tooling
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+  design:
+    - Include sequence diagrams for complex flows
+    - Document architecture decisions with rationale
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+  apply:
+    tdd: true
+    test_command: "python -m pytest"
+    conventions:
+      - Follow existing feature-based patterns (repository + service + handler)
+      - Use MagicMock for unit tests as existing convention
+  verify:
+    test_command: "python -m pytest"
+    build_command: ""
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas
+
+testing:
+  strict_tdd: true
+  test_runner:
+    command: "python -m pytest"
+    framework: pytest 9.0.2
+  layers:
+    unit:
+      available: true
+      tool: pytest + unittest.mock (MagicMock)
+    integration:
+      available: false
+      tool: —
+    e2e:
+      available: false
+      tool: —
+  coverage:
+    available: false
+    command: —
+  quality:
+    linter:
+      available: true
+      command: "flake8"
+    type_checker:
+      available: false
+      command: —
+    formatter:
+      available: true
+      command: "black"
+    import_sorter:
+      available: true
+      command: "isort"
