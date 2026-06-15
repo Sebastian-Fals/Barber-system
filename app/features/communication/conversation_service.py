@@ -184,7 +184,8 @@ class ConversationService:
 
         # Booking Flow IDs
         if any(
-            interactive_id.startswith(p) for p in ["barber_", "date_", "time_", "page_", "confirm_", "cancel_appt_"]
+            interactive_id.startswith(p)
+            for p in ["service_", "barber_", "date_", "time_", "page_", "confirm_", "cancel_appt_", "cancel_flow"]
         ):
             self.booking_handler.handle_interactive(customer, interactive_id, {})
             return

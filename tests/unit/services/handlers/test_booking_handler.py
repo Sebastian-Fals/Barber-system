@@ -1,7 +1,7 @@
 """
-RED tests: Cancel flow in BookingHandler + cancel buttons in WelcomeHandler.
+RED tests: Cancel flow in BookingHandler + cancel buttons + service selection.
 
-Spec: appointment-locking — Cancel text resets state.
+Spec: booking-flow — Service Selection Step, Unified Booking Flow, Cancel mid-flow.
 """
 import json
 from unittest.mock import MagicMock, patch
@@ -9,6 +9,160 @@ from unittest.mock import MagicMock, patch
 from app.models.models import Business, Customer, CustomerData
 from app.services.handlers.booking_handler import BookingHandler
 from app.services.handlers.welcome_handler import WelcomeHandler
+
+
+class TestBookingHandlerServiceSelection:
+    """RED: service_X interactive routes to barber selection."""
+
+    def test_service_selection_transitions_to_select_barber(self):
+        """
+        Scenario: User clicks a service button.
+        - GIVEN customer is in SELECT_SERVICE state with empty data
+        - WHEN interactive_id "service_1" is received
+        - THEN state becomes SELECT_BARBER and barber buttons are sent.
+        """
+        db = MagicMock()
+        business = Business(id=1, name="Test Biz")
+        db.query.return_value.filter.return_value.first.return_value = business
+
+        from app.models.models import Barber
+
+        mock_barber = Barber(id=10, name="Carlos", business_id=1)
+        mock_barber2 = Barber(id=11, name="Ana", business_id=1)
+
+        customer = Customer(
+            id=1,
+            phone="+57000123",
+            name="Test",
+            conversation_state=CustomerData.SELECT_SERVICE,
+            conversation_data="{}",
+        )
+
+        handler = BookingHandler(db, "phone_id_123", business_id=1)
+
+        # Mock barber repo to return barbers
+        with patch.object(handler, "barber_repo") as mock_barber_repo:
+            mock_barber_repo.get_by_business.return_value = [mock_barber, mock_barber2]
+
+            with patch.object(handler, "_update_state") as mock_update:
+                with patch("app.services.handlers.booking_handler.whatsapp_service") as mock_ws:
+                    with patch("app.services.handlers.booking_handler.message_loader") as mock_loader:
+                        mock_loader.get.return_value = "Elige barbero"
+
+                        handler.handle_interactive(customer, "service_1", {})
+
+                        # Verify state transition to SELECT_BARBER
+                        mock_update.assert_called_once()
+                        args, _kwargs = mock_update.call_args
+                        assert args[1] == CustomerData.SELECT_BARBER
+
+                        # Verify barber buttons were sent
+                        mock_ws.send_interactive_button.assert_called_once()
+                        ws_args, ws_kwargs = mock_ws.send_interactive_button.call_args
+                        if len(ws_args) >= 4:
+                            buttons = ws_args[3]
+                        else:
+                            buttons = ws_kwargs.get("buttons", [])
+                        button_ids = [b["id"] for b in buttons]
+                        assert any(
+                            bid.startswith("barber_") for bid in button_ids
+                        ), f"Expected barber_ buttons, got: {button_ids}"
+
+    def test_invalid_service_selection_keeps_state(self):
+        """
+        Scenario: User sends text that doesn't match a service.
+        - GIVEN customer is in SELECT_SERVICE state
+        - WHEN text "algo random" is sent (not matching any service)
+        - THEN BookingHandler stays in SELECT_SERVICE (returns False for fallthrough).
+        """
+        db = MagicMock()
+        business = Business(id=1, name="Test Biz")
+        db.query.return_value.filter.return_value.first.return_value = business
+
+        customer = Customer(
+            id=2,
+            phone="+57000456",
+            name="Test2",
+            conversation_state=CustomerData.SELECT_SERVICE,
+        )
+
+        handler = BookingHandler(db, "phone_id_123", business_id=1)
+        result = handler.handle_message(customer, "algo random")
+
+        # Should return False (not handled) so conversation_service can re-prompt
+        assert result is False
+
+
+class TestBookingHandlerCancelButtonEveryStep:
+    """RED: "Cancelar" button present in every booking step."""
+
+    def test_cancel_button_in_service_step(self):
+        """
+        - GIVEN customer is in SELECT_SERVICE
+        - WHEN service buttons are presented
+        - THEN a "Cancelar" button with id=cancel_flow is included.
+        """
+        db = MagicMock()
+        business = Business(id=1, name="Test Biz")
+        db.query.return_value.filter.return_value.first.return_value = business
+
+        from app.models.models import Barber
+
+        customer = Customer(
+            id=1,
+            phone="+57000123",
+            name="Test",
+            conversation_state=CustomerData.SELECT_SERVICE,
+            conversation_data="{}",
+        )
+
+        handler = BookingHandler(db, "phone_id_123", business_id=1)
+
+        with patch.object(handler, "barber_repo") as mock_barber_repo:
+            mock_barber_repo.get_by_business.return_value = [Barber(id=10, name="Carlos", business_id=1)]
+
+            with patch("app.services.handlers.booking_handler.whatsapp_service") as mock_ws:
+                with patch("app.services.handlers.booking_handler.message_loader") as mock_loader:
+                    mock_loader.get.return_value = "Elige barbero"
+
+                    handler.handle_interactive(customer, "service_1", {})
+
+                    ws_args, ws_kwargs = mock_ws.send_interactive_button.call_args
+                    if len(ws_args) >= 4:
+                        buttons = ws_args[3]
+                    else:
+                        buttons = ws_kwargs.get("buttons", [])
+
+                    cancel_ids = [b["id"] for b in buttons if b["id"] == "cancel_flow"]
+                    assert len(cancel_ids) == 1, f"Expected cancel_flow button in step, got buttons: {buttons}"
+
+    def test_cancel_flow_interactive_resets_state(self):
+        """
+        - GIVEN customer is in any booking state
+        - WHEN interactive_id "cancel_flow" is received
+        - THEN state resets to IDLE and welcome menu is shown.
+        """
+        db = MagicMock()
+        business = Business(id=1, name="Test Biz")
+        db.query.return_value.filter.return_value.first.return_value = business
+
+        customer = Customer(
+            id=1,
+            phone="+57000123",
+            name="Test",
+            conversation_state=CustomerData.SELECT_SERVICE,
+            conversation_data=json.dumps({"service_id": 1}),
+        )
+
+        handler = BookingHandler(db, "phone_id_123", business_id=1)
+
+        with patch.object(handler, "_update_state") as mock_update:
+            handler.handle_interactive(customer, "cancel_flow", {})
+
+            mock_update.assert_called_once()
+            args, _kwargs = mock_update.call_args
+            assert args[1] == CustomerData.IDLE
+            assert args[2] == {}
 
 
 class TestBookingHandlerCancel:

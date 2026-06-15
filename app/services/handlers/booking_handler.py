@@ -67,7 +67,10 @@ class BookingHandler(BaseHandler):
         return False
 
     def handle_interactive(self, customer: Customer, interactive_id: str, payload: Dict[str, Any]) -> None:
-        if interactive_id.startswith("barber_"):
+        if interactive_id.startswith("service_"):
+            self._handle_service_selection(customer, interactive_id)
+
+        elif interactive_id.startswith("barber_"):
             self._handle_barber_selection(customer, interactive_id)
 
         elif interactive_id.startswith("date_"):
@@ -85,8 +88,32 @@ class BookingHandler(BaseHandler):
         elif interactive_id == "confirm_no":
             self._cancel_booking_process(customer)
 
+        elif interactive_id == "cancel_flow":
+            self._cancel_booking_process(customer)
+
         elif interactive_id.startswith("cancel_appt_"):
             self._finalize_cancellation(customer, interactive_id)
+
+    def _handle_service_selection(self, customer: Customer, interactive_id: str):
+        # ID format: service_{id}
+        parts = interactive_id.split("_")
+        if len(parts) < 2:
+            return
+
+        service_id = int(parts[1])
+        data = self._get_data(customer)
+        data["service_id"] = service_id
+
+        # Next: Select Barber
+        self._update_state(customer, CustomerData.SELECT_BARBER, data)
+
+        barbers = self.barber_repo.get_by_business(self.business_id)
+        msg = message_loader.get("booking_ask_barber")
+        buttons = [{"id": f"barber_{b.id}", "title": b.name} for b in barbers[:3]]
+        # Always include Cancel button
+        buttons.append({"id": "cancel_flow", "title": "Cancelar"})
+
+        whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
 
     def _handle_barber_selection(self, customer: Customer, interactive_id: str):
         # ID format: barber_{id}
@@ -109,6 +136,7 @@ class BookingHandler(BaseHandler):
         buttons = [
             {"id": "date_today", "title": message_loader.get("btn_today")},
             {"id": "date_tomorrow", "title": message_loader.get("btn_tomorrow")},
+            {"id": "cancel_flow", "title": "Cancelar"},
         ]
         whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
 
@@ -193,6 +221,7 @@ class BookingHandler(BaseHandler):
         buttons = [
             {"id": "confirm_yes", "title": message_loader.get("btn_yes")},
             {"id": "confirm_no", "title": message_loader.get("btn_no")},
+            {"id": "cancel_flow", "title": "Cancelar"},
         ]
         whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
 

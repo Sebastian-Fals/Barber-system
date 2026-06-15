@@ -82,19 +82,30 @@ class WelcomeHandler(BaseHandler):
             CustomerRepository(self.db).update_state(customer, CustomerData.IDLE)
 
     def _start_booking_flow(self, customer: Customer):
-        # 1. Update State
+        # 1. Update State → SELECT_SERVICE (first step)
         from app.features.customers.repository import CustomerRepository
 
-        CustomerRepository(self.db).update_state(customer, CustomerData.SELECT_BARBER)
+        CustomerRepository(self.db).update_state(customer, CustomerData.SELECT_SERVICE)
 
-        # 2. Show Barbers (First step of booking)
-        barbers = self.barber_repo.get_by_business(self.business.id)
+        # 2. Show Services (first step of booking)
+        from app.features.business.service_repository import ServiceRepository
 
-        msg = message_loader.get("booking_ask_barber")
-        buttons = [{"id": f"barber_{b.id}", "title": b.name} for b in barbers[:3]]
+        svc_repo = ServiceRepository(self.db)
+        services = svc_repo.get_by_business(self.business.id)
 
-        # Pagination could be added here similar to legacy code
-        # For MVP refactor, limiting to 3 is fine, or add "Next"
+        if not services:
+            # Fallback: no services configured — go straight to barber selection
+            msg = message_loader.get("booking_ask_barber")
+            barbers = self.barber_repo.get_by_business(self.business.id)
+            buttons = [{"id": f"barber_{b.id}", "title": b.name} for b in barbers[:3]]
+            buttons.append({"id": "cancel_flow", "title": "Cancelar"})
+            whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
+            return
+
+        msg = message_loader.get("booking_ask_service", default="Elige el servicio:")
+        buttons = [{"id": f"service_{s.id}", "title": s.name} for s in services[:3]]
+        # Always include Cancel button
+        buttons.append({"id": "cancel_flow", "title": "Cancelar"})
 
         whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
 
