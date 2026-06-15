@@ -1,6 +1,32 @@
+import hashlib
 import logging
+import re
 import sys
 from logging.handlers import RotatingFileHandler
+
+# Regex patterns for PII detection
+_PHONE_RE = re.compile(r"\+?\d{7,15}")
+_EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+
+
+def sanitize_pii_for_log(message: str) -> str:
+    """
+    Sanitize PII (phone numbers, emails) from log messages.
+    Phone numbers are hashed; emails are truncated to domain only.
+    """
+    if not message:
+        return message
+
+    # Replace emails: user@example.com → ***@example.com
+    message = _EMAIL_RE.sub(lambda m: f"***@{m.group().split('@', 1)[-1]}", message)
+
+    # Replace phone numbers: +573001234567 → [PHONE:sha256prefix]
+    message = _PHONE_RE.sub(
+        lambda m: f"[PHONE:{hashlib.sha256(m.group().encode()).hexdigest()[:8]}]",
+        message,
+    )
+
+    return message
 
 
 def setup_logging():
