@@ -1,7 +1,10 @@
+from datetime import datetime, timedelta
 from typing import Any, Dict
 
+import pytz
 from sqlalchemy.orm import Session
 
+from app.core.exceptions import BusinessCalendarError, ServiceValidationError, SlotOccupiedError
 from app.core.i18n import message_loader
 from app.core.logging_config import logger
 from app.features.appointments.repository import AppointmentRepository
@@ -11,24 +14,31 @@ from app.features.business.repository import BusinessRepository
 from app.features.communication.llm_service import llm_service
 from app.features.communication.whatsapp_service import whatsapp_service
 from app.features.customers.repository import CustomerRepository
-from app.models.models import Business, Customer, CustomerData
+from app.models.models import Business, ConversationHistory, Customer, CustomerData
 from app.services.handlers.base_handler import BaseHandler
 
 
 class QueryHandler(BaseHandler):
-    def __init__(self, db: Session, phone_number_id: str):
-        super().__init__(db, phone_number_id)
+    def __init__(self, db: Session, phone_number_id: str, business_id: int):
+        super().__init__(db, phone_number_id, business_id)
         self.customer_repo = CustomerRepository(db)
         self.barber_repo = BarberRepository(db)
         self.business_repo = BusinessRepository(db)
         self.appt_repo = AppointmentRepository(db)
         self.booking_service = BookingService(db)
-        self.business = db.query(Business).filter(Business.phone_number_id == phone_number_id).first()
+        # Context — resolved by ID (already known from webhook)
+        self.business = db.query(Business).filter(Business.id == business_id).first()
 
     def handle_message(self, customer: Customer, message_body: str) -> None:
         """
         Process free-text message using LLM.
         """
+        # 1. Manage History Expiration (Lazy)
+        self._manage_history_expiration(customer.id)
+
+        # 2. Log Incoming Message
+        self._log_message(customer.id, "user", message_body)
+
         # 0. Intercept CONFIRM_BOOKING state Manually (Optimize Latency & Avoid LLM)
         if customer.conversation_state == CustomerData.CONFIRM_BOOKING:
             msg_lower = message_body.strip().lower()
@@ -59,24 +69,31 @@ class QueryHandler(BaseHandler):
                         self.customer_repo.update_state(customer, CustomerData.IDLE)
                         return
 
-                    appt = self.booking_service.create_appointment(
-                        customer, data.get("barber_id"), data.get("date"), data.get("time")
-                    )
-
-                    if appt:
+                    try:
+                        appt = self.booking_service.create_appointment(
+                            customer, data.get("barber_id"), data.get("date"), data.get("time")
+                        )
                         logger.info(f"Booking created: {appt.id}")
                         whatsapp_service.send_message(
                             self.phone_number_id, customer.phone, message_loader.get("booking_confirmed")
                         )
-                        # Reset
                         self.customer_repo.update_state(customer, CustomerData.IDLE)
                         self.customer_repo.update_data(customer, "{}")
-                    else:
-                        logger.warning("Booking failed (Occupied?)")
+
+                    except (SlotOccupiedError, BusinessCalendarError) as e:
+                        logger.warning(f"Booking failed: {e}")
                         whatsapp_service.send_message(
                             self.phone_number_id,
                             customer.phone,
-                            "Error al crear la cita. El horario podría estar ocupado.",
+                            f"No se pudo agendar: {e} 📅",
+                        )
+                        self.customer_repo.update_state(customer, CustomerData.IDLE)
+                    except ServiceValidationError as e:
+                        logger.error(f"Validation error: {e}")
+                        whatsapp_service.send_message(
+                            self.phone_number_id,
+                            customer.phone,
+                            "Hubo un problema con los datos recibidos. Por favor intenta de nuevo.",
                         )
                         self.customer_repo.update_state(customer, CustomerData.IDLE)
                 except Exception as e:
@@ -125,10 +142,14 @@ class QueryHandler(BaseHandler):
             extracted = analysis.get("extracted", {})
             self._handle_cancellation_intent(customer, reply, extracted)
 
-        elif intent == "CANCEL_CONVERSATION":
+        if intent == "CANCEL_CONVERSATION":
             # Explicit Reset/Stop
             if reply:
-                whatsapp_service.send_message(self.phone_number_id, customer.phone, reply)
+                self._send_and_log(customer, reply)
+
+            # Purge History
+            self._purge_history(customer.id)
+
             self.customer_repo.update_state(customer, CustomerData.IDLE)
             self.customer_repo.update_data(customer, "{}")
 
@@ -138,12 +159,11 @@ class QueryHandler(BaseHandler):
 
         elif intent == "WHO_AM_I":
             # Answer about identity
+            # Answer about identity
             if reply:
-                whatsapp_service.send_message(self.phone_number_id, customer.phone, reply)
+                self._send_and_log(customer, reply)
             else:
-                whatsapp_service.send_message(
-                    self.phone_number_id, customer.phone, f"Te tengo registrado como {customer.name}."
-                )
+                self._send_and_log(customer, f"Te tengo registrado como {customer.name}.")
 
             # Update Customer Name
             extracted = analysis.get("extracted", {})
@@ -157,29 +177,26 @@ class QueryHandler(BaseHandler):
                 logger.warning(f"Ignored invalid name update attempt: {new_name}")
 
             # Reply with LLM's message (which should be "Nice to meet you X")
+            # Reply with LLM's message (which should be "Nice to meet you X")
             if reply:
-                whatsapp_service.send_message(self.phone_number_id, customer.phone, reply)
+                self._send_and_log(customer, reply)
             else:
-                whatsapp_service.send_message(
-                    self.phone_number_id, customer.phone, "¡Gracias! He actualizado tu nombre."
-                )
+                self._send_and_log(customer, "¡Gracias! He actualizado tu nombre.")
 
         elif intent == "CHITCHAT":
             # Just reply directly ("Hola", "Gracias", Info del negocio)
             # Ana answers directly now.
             if reply:
-                whatsapp_service.send_message(self.phone_number_id, customer.phone, reply)
+                self._send_and_log(customer, reply)
             else:
-                whatsapp_service.send_message(self.phone_number_id, customer.phone, "¡Hola! ¿En qué puedo ayudarte?")
+                self._send_and_log(customer, "¡Hola! ¿En qué puedo ayudarte?")
 
         else:
             # General Q&A or Unknown
             if reply:
-                whatsapp_service.send_message(self.phone_number_id, customer.phone, reply)
+                self._send_and_log(customer, reply)
             else:
-                whatsapp_service.send_message(
-                    self.phone_number_id, customer.phone, message_loader.get("error_fallback")
-                )
+                self._send_and_log(customer, message_loader.get("error_fallback"))
 
     def handle_interactive(self, customer: Customer, interactive_id: str, payload: Dict[str, Any]) -> None:
         # QueryHandler normally doesn't handle buttons unless we add "Are you sure?" flows here.
@@ -205,6 +222,21 @@ class QueryHandler(BaseHandler):
 
         # Simple history - in a real app check conversation_data or a message log table
         history = []
+
+        # Load Recent History from DB
+        try:
+            hist_rows = (
+                self.db.query(ConversationHistory)
+                .filter(ConversationHistory.customer_id == customer.id)
+                .order_by(ConversationHistory.created_at.asc())
+                .limit(15)
+                .all()
+            )
+
+            history = [{"role": h.role, "content": h.message} for h in hist_rows]
+        except Exception as e:
+            logger.error(f"Error fetching conversation history: {e}")
+            history = []
 
         from app.core.datetime_utils import now_local
 
@@ -520,3 +552,56 @@ class QueryHandler(BaseHandler):
         from app.core.datetime_utils import now_local
 
         return days.get(now_local().strftime("%A"), "Hoy")
+
+    def _manage_history_expiration(self, customer_id: int):
+        """
+        Check existing history and purge if inactivity > 24 hours.
+        """
+        try:
+            last_msg = (
+                self.db.query(ConversationHistory)
+                .filter(ConversationHistory.customer_id == customer_id)
+                .order_by(ConversationHistory.created_at.desc())
+                .first()
+            )
+
+            if last_msg:
+                now = datetime.now(pytz.UTC)
+                # Ensure aware
+                msg_time = last_msg.created_at
+                if msg_time.tzinfo is None:
+                    msg_time = pytz.UTC.localize(msg_time)
+
+                if (now - msg_time) > timedelta(hours=24):
+                    logger.info(f"Purging history for customer {customer_id} due to inactivity > 24h")
+                    self._purge_history(customer_id)
+        except Exception as e:
+            logger.error(f"Error checking history expiration: {e}")
+
+    def _purge_history(self, customer_id: int):
+        try:
+            self.db.query(ConversationHistory).filter(ConversationHistory.customer_id == customer_id).delete()
+            self.db.commit()
+            logger.info(f"History purged for customer {customer_id}")
+        except Exception as e:
+            logger.error(f"Error purging history: {e}")
+
+    def _log_message(self, customer_id: int, role: str, message: str):
+        try:
+            entry = ConversationHistory(
+                customer_id=customer_id, role=role, message=message, created_at=datetime.now(pytz.UTC)
+            )
+            self.db.add(entry)
+            self.db.commit()
+        except Exception as e:
+            logger.error(f"Error logging message to history: {e}")
+
+    def _send_and_log(self, customer: Customer, message: str):
+        """
+        Helper to send via WhatsApp and log as assistant message.
+        """
+        # Send
+        whatsapp_service.send_message(self.phone_number_id, customer.phone, message)
+
+        # Log
+        self._log_message(customer.id, "assistant", message)

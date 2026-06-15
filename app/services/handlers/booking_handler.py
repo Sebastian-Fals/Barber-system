@@ -4,6 +4,7 @@ from typing import Any, Dict
 
 from sqlalchemy.orm import Session
 
+from app.core.exceptions import BusinessCalendarError, ServiceValidationError, SlotOccupiedError
 from app.core.i18n import message_loader
 from app.core.logging_config import logger
 from app.features.appointments.service import BookingService
@@ -26,14 +27,14 @@ from app.services.handlers.base_handler import BaseHandler
 
 
 class BookingHandler(BaseHandler):
-    def __init__(self, db: Session, phone_number_id: str):
-        super().__init__(db, phone_number_id)
+    def __init__(self, db: Session, phone_number_id: str, business_id: int):
+        super().__init__(db, phone_number_id, business_id)
         self.booking_service = BookingService(db)
         self.customer_repo = CustomerRepository(db)
         self.barber_repo = BarberRepository(db)
         self.business_repo = BusinessRepository(db)
-        # Context
-        self.business = db.query(Business).filter(Business.phone_number_id == phone_number_id).first()
+        # Context — resolved by ID, not by phone_number_id query
+        self.business = db.query(Business).filter(Business.id == business_id).first()
 
     def _get_data(self, customer: Customer) -> dict:
         try:
@@ -200,16 +201,19 @@ class BookingHandler(BaseHandler):
     def _finalize_booking(self, customer: Customer):
         data = self._get_data(customer)
 
-        appt = self.booking_service.create_appointment(customer, data["barber_id"], data["date"], data["time"])
-
-        if appt:
+        try:
+            self.booking_service.create_appointment(customer, data["barber_id"], data["date"], data["time"])
             whatsapp_service.send_message(self.phone_number_id, customer.phone, message_loader.get("booking_confirmed"))
             # Reset state
             self._update_state(customer, CustomerData.IDLE, {})
-            # Optionally show menu again via WelcomeHandler?
-            # Ideally the Router would invoke WelcomeHandler after this.
-            # For now, let's just send a prompt text.
-        else:
+        except (SlotOccupiedError, BusinessCalendarError) as e:
+            whatsapp_service.send_message(self.phone_number_id, customer.phone, f"⚠️ {e}")
+            self._update_state(customer, CustomerData.IDLE, {})
+        except ServiceValidationError as e:
+            whatsapp_service.send_message(self.phone_number_id, customer.phone, f"❌ Error en los datos: {e}")
+            self._update_state(customer, CustomerData.IDLE, {})
+        except Exception as e:
+            logger.error(f"Unexpected error in booking confirmation: {e}")
             whatsapp_service.send_message(self.phone_number_id, customer.phone, message_loader.get("booking_error"))
             self._update_state(customer, CustomerData.IDLE, {})
 

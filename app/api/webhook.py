@@ -3,32 +3,44 @@ import asyncio
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Request
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.core.config import settings
 from app.core.database import SessionLocal, get_db
 from app.core.logging_config import logger
+from app.features.business.repository import BusinessRepository
 from app.features.communication.conversation_service import ConversationService
 from app.models.models import ProcessedMessage
+from app.services.buffer_service import BufferService
 
 router = APIRouter()
 
-# Removing in-memory cache
 
-
-def process_background_message(
-    phone_number_id: str, from_number: str, msg_body: str, msg_type: str, interactive_id: str
+async def process_background_message(
+    phone_number_id: str, from_number: str, msg_body: str, msg_type: str, interactive_id: str, business_id: int
 ):
-    # Create a NEW session for the background task
-    db = SessionLocal()
     try:
-        service = ConversationService(db, phone_number_id)
-        service.handle_incoming_message(from_number, msg_body, msg_type, interactive_id)
+        if msg_type == "text":
+            # Route text messages through the 10s buffer
+            await BufferService.add_message(from_number, msg_body, phone_number_id, business_id)
+        else:
+            # Route interactive/media messages directly (bypass buffer)
+            # Create a NEW session for the background task
+
+            def _process_direct():
+                db = SessionLocal()
+                try:
+                    service = ConversationService(db, phone_number_id, business_id)
+                    service.handle_incoming_message(from_number, msg_body, msg_type, interactive_id)
+                finally:
+                    db.close()
+
+            await run_in_threadpool(_process_direct)
+
     except asyncio.CancelledError:
         logger.warning(f"Task cancelled for {from_number} (Server Shutdown/Reload)")
     except Exception as e:
         logger.error(f"Error processing message: {e}", exc_info=True)
-    finally:
-        db.close()
 
 
 @router.get("/webhook")
@@ -53,6 +65,9 @@ async def verify_webhook(request: Request):
 def receive_webhook(background_tasks: BackgroundTasks, body: dict = Body(...), db: Session = Depends(get_db)):
     """
     Receives incoming messages from WhatsApp. Returns 200 OK immediately.
+
+    Multi-tenant: resolves phone_number_id → business_id before any processing.
+    Unknown phone_number_id → silent ignore (200, no data created).
     """
     if body.get("object") == "whatsapp_business_account":
         for entry in body.get("entry", []):
@@ -60,19 +75,39 @@ def receive_webhook(background_tasks: BackgroundTasks, body: dict = Body(...), d
                 value = change.get("value", {})
                 phone_number_id = value.get("metadata", {}).get("phone_number_id")
 
+                if not phone_number_id:
+                    logger.warning("Webhook received without phone_number_id")
+                    continue
+
+                # Resolve business_id early — the whole chain is scoped by it
+                biz_repo = BusinessRepository(db)
+                business = biz_repo.get_by_phone_number_id(phone_number_id)
+                if not business:
+                    logger.warning(f"Unknown phone_number_id: {phone_number_id} — message ignored")
+                    continue  # Silent ignore — no un-scoped data created
+
+                business_id = business.id
+
                 if params_messages := value.get("messages", []):
                     for message in params_messages:
                         msg_id = message.get("id")
 
-                        # Deduplication Check (DB Based)
+                        # Deduplication Check — scoped by (msg_id, business_id)
                         try:
-                            exists = db.query(ProcessedMessage).filter(ProcessedMessage.message_id == msg_id).first()
+                            exists = (
+                                db.query(ProcessedMessage)
+                                .filter(
+                                    ProcessedMessage.message_id == msg_id,
+                                    ProcessedMessage.business_id == business_id,
+                                )
+                                .first()
+                            )
                             if exists:
-                                logger.info(f"Duplicate message ignored: {msg_id}")
+                                logger.info(f"Duplicate message ignored: {msg_id} (business {business_id})")
                                 continue
 
                             # Log message as processed
-                            new_msg = ProcessedMessage(message_id=msg_id)
+                            new_msg = ProcessedMessage(message_id=msg_id, business_id=business_id)
                             db.add(new_msg)
                             db.commit()
 
@@ -82,8 +117,6 @@ def receive_webhook(background_tasks: BackgroundTasks, body: dict = Body(...), d
                             continue
                         except Exception as e:
                             logger.error(f"Error checking deduplication: {e}")
-                            # Continue processing even if DB check fails? Safer to fail open or closed?
-                            # Failing open (processing) is better than dropping.
                             pass
 
                         from_number = message.get("from")
@@ -96,11 +129,17 @@ def receive_webhook(background_tasks: BackgroundTasks, body: dict = Body(...), d
                         elif msg_type == "interactive":
                             interactive_id = message.get("interactive", {}).get("button_reply", {}).get("id")
 
-                        logger.info(f"Queuing message {msg_id} from {from_number}")
+                        logger.info(f"Queuing message {msg_id} from {from_number} (business {business_id})")
 
-                        # Dispatch to Background
+                        # Dispatch to Background — propagate business_id
                         background_tasks.add_task(
-                            process_background_message, phone_number_id, from_number, msg_body, msg_type, interactive_id
+                            process_background_message,
+                            phone_number_id,
+                            from_number,
+                            msg_body,
+                            msg_type,
+                            interactive_id,
+                            business_id,
                         )
 
     return {"status": "received"}

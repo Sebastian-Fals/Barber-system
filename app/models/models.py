@@ -2,7 +2,7 @@ import enum
 from datetime import datetime
 
 import pytz
-from sqlalchemy import Boolean, Column, ForeignKey, Integer, String
+from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base, EncryptedString, UTCDateTime
@@ -22,8 +22,8 @@ class Business(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, index=True)
     phone_number_id = Column(String, unique=True, index=True, nullable=False)
-    phone = Column(String, nullable=True, comment="Public contact number")
-    calendar_id = Column(String, nullable=True, comment="Master calendar for the business")
+    phone = Column(EncryptedString, nullable=True, comment="Public contact number")
+    calendar_id = Column(EncryptedString, nullable=True, comment="Master calendar for the business")
     ai_enabled = Column(Boolean, default=True)  # New flag for Hybrid Flow
 
     # Hours (24h format integer) - DEPRECATED in favor of schedule, kept for backwards compat
@@ -43,7 +43,7 @@ class Barber(Base):
     business_id = Column(Integer, ForeignKey("businesses.id"))
     name = Column(String, index=True)
     phone = Column(EncryptedString, nullable=True)  # Optional, for notifications
-    calendar_id = Column(String, nullable=True, comment="Individual barber calendar")
+    calendar_id = Column(EncryptedString, nullable=True, comment="Individual barber calendar")
 
     # Relationships
     business = relationship("Business", back_populates="barbers")
@@ -63,11 +63,13 @@ class CustomerData(str, enum.Enum):
 
 class Customer(Base):
     __tablename__ = "customers"
+    __table_args__ = (UniqueConstraint("phone_hash", "business_id", name="uq_customer_phone_business"),)
 
     id = Column(Integer, primary_key=True, index=True)
-    phone_hash = Column(String, unique=True, index=True)
+    phone_hash = Column(String, index=True)
     phone_encrypted = Column(EncryptedString, nullable=False)
     name = Column(EncryptedString)
+    business_id = Column(Integer, ForeignKey("businesses.id"), nullable=False)
 
     # Conversation State Management
     conversation_state = Column(String, default=CustomerData.IDLE)
@@ -76,6 +78,7 @@ class Customer(Base):
     conversation_data = Column(String, default="{}")
 
     # Relationships
+    business = relationship("Business")
     appointments = relationship("Appointment", back_populates="customer")
 
     @property
@@ -94,6 +97,7 @@ class Appointment(Base):
     id = Column(Integer, primary_key=True, index=True)
     customer_id = Column(Integer, ForeignKey("customers.id"))
     barber_id = Column(Integer, ForeignKey("barbers.id"))
+    business_id = Column(Integer, ForeignKey("businesses.id"), nullable=False)
     start_time = Column(UTCDateTime, nullable=False)
     end_time = Column(UTCDateTime, nullable=False)
     status = Column(String, default=AppointmentStatus.PENDING)
@@ -108,11 +112,41 @@ class Appointment(Base):
     # Relationships
     customer = relationship("Customer", back_populates="appointments")
     barber = relationship("Barber", back_populates="appointments")
+    business = relationship("Business")
 
 
 class ProcessedMessage(Base):
     __tablename__ = "processed_messages"
+    __table_args__ = (UniqueConstraint("message_id", "business_id", name="uq_processed_msg_business"),)
 
     id = Column(Integer, primary_key=True, index=True)
-    message_id = Column(String, unique=True, index=True)
+    message_id = Column(String, index=True)
+    business_id = Column(Integer, ForeignKey("businesses.id"), nullable=False)
     created_at = Column(UTCDateTime, default=lambda: datetime.now(pytz.UTC))
+
+    business = relationship("Business")
+
+
+class ConversationHistory(Base):
+    __tablename__ = "conversation_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    customer_id = Column(Integer, ForeignKey("customers.id"), index=True)
+    business_id = Column(Integer, ForeignKey("businesses.id"), nullable=False)
+    role = Column(String)  # 'user' or 'assistant'
+    message = Column(EncryptedString)  # Encrypted content
+    created_at = Column(UTCDateTime, default=lambda: datetime.now(pytz.UTC))
+
+    customer = relationship("Customer")
+    business = relationship("Business")
+
+
+class MessageBuffer(Base):
+    __tablename__ = "message_buffers"
+
+    customer_id = Column(Integer, ForeignKey("customers.id"), primary_key=True)
+    content = Column(EncryptedString, default="")
+    updated_at = Column(UTCDateTime, default=lambda: datetime.now(pytz.UTC))
+    is_running = Column(Boolean, default=False)
+
+    customer = relationship("Customer")

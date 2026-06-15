@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from sqlalchemy.orm import Session
 
@@ -14,9 +14,10 @@ class BaseHandler(ABC):
     Each handler is responsible for a specific subset of the conversation flow.
     """
 
-    def __init__(self, db: Session, phone_number_id: str):
+    def __init__(self, db: Session, phone_number_id: str, business_id: int):
         self.db = db
         self.phone_number_id = phone_number_id
+        self.business_id = business_id
 
     @abstractmethod
     def handle_message(self, customer: Customer, message_body: str) -> None:

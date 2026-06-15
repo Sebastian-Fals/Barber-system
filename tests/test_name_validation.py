@@ -9,14 +9,16 @@ class TestNameValidation(unittest.TestCase):
     @patch("app.features.communication.conversation_service.QueryHandler")
     @patch("app.features.communication.conversation_service.BookingHandler")
     @patch("app.features.communication.conversation_service.WelcomeHandler")
-    @patch("app.features.communication.whatsapp_service.whatsapp_service")
+    @patch("app.features.communication.conversation_service.whatsapp_service")
     def test_invalid_name_rejected(self, mock_ws, mock_welcome, mock_booking, mock_query):
         # Setup
         db = MagicMock()
-        service = ConversationService(db, "123")
+        service = ConversationService(db, "123", 1)
 
         # Mock Customer in WAITING_NAME state (using new mock structure)
-        customer = Customer(id=1, phone="555", name="Usuario", conversation_state=CustomerData.WAITING_NAME)
+        customer = Customer(
+            id=1, phone="555", name="Usuario", conversation_state=CustomerData.WAITING_NAME, business_id=1
+        )
 
         # Mock Repo injection (ConversationService creates them, but we can override or mock constructors too)
         # Actually easier to override after init or mock constructors.
@@ -39,13 +41,13 @@ class TestNameValidation(unittest.TestCase):
     @patch("app.features.communication.conversation_service.QueryHandler")
     @patch("app.features.communication.conversation_service.BookingHandler")
     @patch("app.features.communication.conversation_service.WelcomeHandler")
-    @patch("app.features.communication.whatsapp_service.whatsapp_service")
+    @patch("app.features.communication.conversation_service.whatsapp_service")
     def test_valid_name_accepted(self, mock_ws, mock_welcome, mock_booking, mock_query):
         # Setup
         db = MagicMock()
-        service = ConversationService(db, "123")
+        service = ConversationService(db, "123", 1)
 
-        customer = Customer(id=1, phone="555", conversation_state=CustomerData.WAITING_NAME)
+        customer = Customer(id=1, phone="555", conversation_state=CustomerData.WAITING_NAME, business_id=1)
         service.customer_repo = MagicMock()
         service.business_repo = MagicMock()
 
