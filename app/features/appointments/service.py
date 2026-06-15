@@ -7,7 +7,6 @@ from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.core.datetime_utils import get_local_timezone, now_local, to_local  # , to_utc
 from app.core.exceptions import BusinessCalendarError, ServiceValidationError, SlotOccupiedError
 from app.core.logging_config import logger
@@ -213,7 +212,7 @@ class BookingService:
         # PostgreSQL: SELECT ... FOR UPDATE locks matching rows
         # SQLite: BEGIN IMMEDIATE prevents concurrent writes to the table
         try:
-            if "sqlite" in settings.DATABASE_URL:
+            if self.db.get_bind().dialect.name == "sqlite":
                 self.db.execute(text("BEGIN IMMEDIATE"))
 
             existing = self.appointment_repo.get_overlapping_confirmed(barber_id, start_time, end_time, for_update=True)
