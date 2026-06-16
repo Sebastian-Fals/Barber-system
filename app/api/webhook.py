@@ -1,11 +1,10 @@
 import asyncio
 
-from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, Request
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from app.core.config import settings
 from app.core.database import SessionLocal, get_db
 from app.core.logging_config import logger
 from app.features.business.repository import BusinessRepository
@@ -16,15 +15,20 @@ router = APIRouter()
 
 
 async def process_background_message(
-    phone_number_id: str, from_number: str, msg_body: str, msg_type: str, interactive_id: str, business_id: int
+    instance_name: str,
+    instance_apikey: str,
+    from_number: str,
+    msg_body: str,
+    msg_type: str,
+    interactive_id: str,
+    business_id: int,
 ):
     try:
-        # Direct processing — no BufferService debounce.
-        # All message types follow the same path.
+
         def _process_direct():
             db = SessionLocal()
             try:
-                service = ConversationService(db, phone_number_id, business_id)
+                service = ConversationService(db, instance_name, instance_apikey, business_id)
                 service.handle_incoming_message(from_number, msg_body, msg_type, interactive_id)
             finally:
                 db.close()
@@ -37,103 +41,94 @@ async def process_background_message(
         logger.error(f"Error processing message: {e}", exc_info=True)
 
 
-@router.get("/webhook")
-async def verify_webhook(request: Request):
-    """
-    Verifies the webhook with WhatsApp.
-    """
-    params = request.query_params
-    mode = params.get("hub.mode")
-    token = params.get("hub.verify_token")
-    challenge = params.get("hub.challenge")
-
-    if mode and token:
-        if mode == "subscribe" and token == settings.WHATSAPP_VERIFY_TOKEN:
-            return int(challenge)
-        else:
-            raise HTTPException(status_code=403, detail="Verification failed")
-    return {"status": "ok"}
-
-
 @router.post("/webhook")
 def receive_webhook(background_tasks: BackgroundTasks, body: dict = Body(...), db: Session = Depends(get_db)):
     """
-    Receives incoming messages from WhatsApp. Returns 200 OK immediately.
+    Receives incoming messages from Evolution API. Returns 200 OK immediately.
 
-    Multi-tenant: resolves phone_number_id → business_id before any processing.
-    Unknown phone_number_id → silent ignore (200, no data created).
+    Multi-tenant: resolves instance → business via get_by_instance_name().
+    Unknown instance → silent ignore (200, no data created).
     """
-    if body.get("object") == "whatsapp_business_account":
-        for entry in body.get("entry", []):
-            for change in entry.get("changes", []):
-                value = change.get("value", {})
-                phone_number_id = value.get("metadata", {}).get("phone_number_id")
+    event = body.get("event")
 
-                if not phone_number_id:
-                    logger.warning("Webhook received without phone_number_id")
-                    continue
+    # Non-messages.upsert events → ignored
+    if event != "messages.upsert":
+        logger.debug(f"Ignoring non-message event: {event}")
+        return {"status": "ignored"}
 
-                # Resolve business_id early — the whole chain is scoped by it
-                biz_repo = BusinessRepository(db)
-                business = biz_repo.get_by_phone_number_id(phone_number_id)
-                if not business:
-                    logger.warning(f"Unknown phone_number_id: {phone_number_id} — message ignored")
-                    continue  # Silent ignore — no un-scoped data created
+    instance_name = body.get("instance")
+    if not instance_name:
+        logger.warning("Webhook received without instance name")
+        return {"status": "ignored"}
 
-                business_id = business.id
+    # Resolve business by instance_name
+    biz_repo = BusinessRepository(db)
+    business = biz_repo.get_by_instance_name(instance_name)
+    if not business:
+        logger.warning(f"Unknown instance: {instance_name} — message ignored")
+        return {"status": "received"}
 
-                if params_messages := value.get("messages", []):
-                    for message in params_messages:
-                        msg_id = message.get("id")
+    business_id = business.id
+    instance_apikey = business.instance_apikey
 
-                        # Deduplication Check — scoped by (msg_id, business_id)
-                        try:
-                            exists = (
-                                db.query(ProcessedMessage)
-                                .filter(
-                                    ProcessedMessage.message_id == msg_id,
-                                    ProcessedMessage.business_id == business_id,
-                                )
-                                .first()
-                            )
-                            if exists:
-                                logger.info(f"Duplicate message ignored: {msg_id} (business {business_id})")
-                                continue
+    data = body.get("data", {})
+    msg_id = data.get("key", {}).get("id")
+    remote_jid = data.get("key", {}).get("remoteJid", "")
+    from_number = remote_jid.split("@")[0] if "@" in remote_jid else remote_jid
+    message_type = data.get("messageType")
+    message = data.get("message", {})
 
-                            # Log message as processed
-                            new_msg = ProcessedMessage(message_id=msg_id, business_id=business_id)
-                            db.add(new_msg)
-                            db.commit()
+    if not msg_id:
+        logger.warning("Message received without id")
+        return {"status": "received"}
 
-                        except IntegrityError:
-                            db.rollback()
-                            logger.info(f"Duplicate message detected (race condition): {msg_id}")
-                            continue
-                        except Exception as e:
-                            logger.error(f"Error checking deduplication: {e}")
-                            pass
+    # Deduplication check
+    try:
+        exists = (
+            db.query(ProcessedMessage)
+            .filter(
+                ProcessedMessage.message_id == msg_id,
+                ProcessedMessage.business_id == business_id,
+            )
+            .first()
+        )
+        if exists:
+            logger.info(f"Duplicate message ignored: {msg_id} (business {business_id})")
+            return {"status": "received"}
 
-                        from_number = message.get("from")
-                        msg_type = message.get("type")
-                        msg_body = ""
-                        interactive_id = None
+        new_msg = ProcessedMessage(message_id=msg_id, business_id=business_id)
+        db.add(new_msg)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        logger.info(f"Duplicate message detected (race condition): {msg_id}")
+        return {"status": "received"}
+    except Exception as e:
+        logger.error(f"Error checking deduplication: {e}")
+        pass
 
-                        if msg_type == "text":
-                            msg_body = message.get("text", {}).get("body")
-                        elif msg_type == "interactive":
-                            interactive_id = message.get("interactive", {}).get("button_reply", {}).get("id")
+    # Parse message body / interactive_id based on messageType
+    msg_body = ""
+    interactive_id = None
 
-                        logger.info(f"Queuing message {msg_id} from {from_number} (business {business_id})")
+    if message_type == "conversation":
+        msg_body = message.get("conversation", "")
+    elif message_type == "listResponse":
+        list_response = message.get("listResponseMessage", {})
+        single_select = list_response.get("singleSelectReply", {})
+        interactive_id = single_select.get("selectedRowId")
 
-                        # Dispatch to Background — propagate business_id
-                        background_tasks.add_task(
-                            process_background_message,
-                            phone_number_id,
-                            from_number,
-                            msg_body,
-                            msg_type,
-                            interactive_id,
-                            business_id,
-                        )
+    logger.info(f"Queuing message {msg_id} from {from_number} (business {business_id})")
+
+    background_tasks.add_task(
+        process_background_message,
+        instance_name,
+        instance_apikey,
+        from_number,
+        msg_body,
+        message_type or "unknown",
+        interactive_id,
+        business_id,
+    )
 
     return {"status": "received"}

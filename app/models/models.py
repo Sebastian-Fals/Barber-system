@@ -21,7 +21,8 @@ class Business(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, index=True)
-    phone_number_id = Column(String, unique=True, index=True, nullable=False)
+    instance_name = Column(String, unique=True, index=True, nullable=False)
+    instance_apikey = Column(EncryptedString, nullable=False)
     phone = Column(EncryptedString, nullable=True, comment="Public contact number")
     calendar_id = Column(EncryptedString, nullable=True, comment="Master calendar for the business")
     ai_enabled = Column(Boolean, default=True)  # New flag for Hybrid Flow

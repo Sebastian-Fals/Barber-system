@@ -13,7 +13,7 @@ class TestNameValidation(unittest.TestCase):
     def test_invalid_name_rejected(self, mock_ws, mock_welcome, mock_booking, mock_query):
         # Setup
         db = MagicMock()
-        service = ConversationService(db, "123", 1)
+        service = ConversationService(db, "123", "apikey-test", 1)
 
         # Mock Customer in WAITING_NAME state (using new mock structure)
         customer = Customer(
@@ -45,7 +45,7 @@ class TestNameValidation(unittest.TestCase):
     def test_valid_name_accepted(self, mock_ws, mock_welcome, mock_booking, mock_query):
         # Setup
         db = MagicMock()
-        service = ConversationService(db, "123", 1)
+        service = ConversationService(db, "123", "apikey-test", 1)
 
         customer = Customer(id=1, phone="555", conversation_state=CustomerData.WAITING_NAME, business_id=1)
         service.customer_repo = MagicMock()

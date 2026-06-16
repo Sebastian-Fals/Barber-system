@@ -12,8 +12,8 @@ from app.services.handlers.base_handler import BaseHandler
 
 
 class WelcomeHandler(BaseHandler):
-    def __init__(self, db: Session, phone_number_id: str, business_id: int):
-        super().__init__(db, phone_number_id, business_id)
+    def __init__(self, db: Session, instance_name: str, instance_apikey: str, business_id: int):
+        super().__init__(db, instance_name, instance_apikey, business_id)
         self.appt_repo = AppointmentRepository(db)
         self.barber_repo = BarberRepository(db)
         # Resolve business by ID (already known from webhook resolution)
@@ -41,7 +41,7 @@ class WelcomeHandler(BaseHandler):
             # Delegate cancellation to BookingHandler
             from app.services.handlers.booking_handler import BookingHandler
 
-            booking_handler = BookingHandler(self.db, self.phone_number_id, self.business.id)
+            booking_handler = BookingHandler(self.db, self.instance_name, self.instance_apikey, self.business.id)
             booking_handler.handle_interactive(customer, interactive_id, payload)
 
         else:
@@ -50,7 +50,7 @@ class WelcomeHandler(BaseHandler):
 
     def _send_welcome_menu(self, customer: Customer, message_body: str = None):
         if not self.business:
-            logger.error(f"No business found for {self.phone_number_id}")
+            logger.error(f"No business found for {self.instance_name}")
             return
 
         # Prepare text
@@ -67,7 +67,7 @@ class WelcomeHandler(BaseHandler):
             {"id": "menu_info", "title": message_loader.get("menu_info")},
         ]
 
-        whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
+        self._send_list_from_buttons(customer.phone, msg, buttons)
 
         # Ensure state is IDLE
         if customer.conversation_state != CustomerData.IDLE:
@@ -99,7 +99,7 @@ class WelcomeHandler(BaseHandler):
             barbers = self.barber_repo.get_by_business(self.business.id)
             buttons = [{"id": f"barber_{b.id}", "title": b.name} for b in barbers[:3]]
             buttons.append({"id": "cancel_flow", "title": "Cancelar"})
-            whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
+            self._send_list_from_buttons(customer.phone, msg, buttons)
             return
 
         msg = message_loader.get("booking_ask_service")
@@ -107,7 +107,7 @@ class WelcomeHandler(BaseHandler):
         # Always include Cancel button
         buttons.append({"id": "cancel_flow", "title": "Cancelar"})
 
-        whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
+        self._send_list_from_buttons(customer.phone, msg, buttons)
 
     def _show_my_appointments(self, customer: Customer):
         appts = self.appt_repo.get_active_for_customer(customer.id)
@@ -122,7 +122,7 @@ class WelcomeHandler(BaseHandler):
                 date_str = appt.start_time.strftime("%d/%m %H:%M")
                 msg += f"- {date_str} con {appt.barber.name}\n"
 
-            whatsapp_service.send_message(self.phone_number_id, customer.phone, msg)
+            whatsapp_service.send_message(self.instance_name, self.instance_apikey, customer.phone, msg)
 
             # Send cancel buttons — one interactive message per appointment
             for appt in appts:
@@ -134,11 +134,11 @@ class WelcomeHandler(BaseHandler):
                         "title": f"Cancelar {date_str}",
                     }
                 ]
-                whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, cancel_msg, buttons)
+                self._send_list_from_buttons(customer.phone, cancel_msg, buttons)
 
             self._send_welcome_menu(customer, message_body="¿Algo más?")
 
     def _show_info(self, customer: Customer):
         msg = message_loader.get("info_message", business_name=self.business.name, phone=self.business.phone)
-        whatsapp_service.send_message(self.phone_number_id, customer.phone, msg)
+        whatsapp_service.send_message(self.instance_name, customer.phone, msg)
         self._send_welcome_menu(customer, message_body="¿En qué más te puedo ayudar?")

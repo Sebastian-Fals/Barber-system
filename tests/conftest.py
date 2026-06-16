@@ -64,4 +64,7 @@ def sample_customer():
 
 @pytest.fixture
 def sample_business():
-    return Business(id=1, name="Test Barber", phone_number_id="12345")
+    business = Business(id=1, name="Test Barber")
+    business.instance_name = "test-instance"
+    business.instance_apikey = "test-apikey-123"
+    return business

@@ -4,24 +4,24 @@ from app.core.config import settings
 
 
 class WhatsAppService:
-    def __init__(self):
-        self.base_url = "https://graph.facebook.com/v18.0"
-        self.token = settings.WHATSAPP_API_TOKEN
+    """Sends WhatsApp messages via self-hosted Evolution API (Baileys engine)."""
 
-    def send_message(self, phone_number_id: str, to_number: str, message_body: str):
+    def __init__(self):
+        self.base_url = settings.EVOLUTION_API_URL.rstrip("/")
+
+    def send_message(self, instance_name: str, apikey: str, to: str, body: str):
         """
-        Sends a text message using the WhatsApp Cloud API.
+        Sends a text message via Evolution API.
+        POST /message/sendText/{instance_name}
         """
-        url = f"{self.base_url}/{phone_number_id}/messages"
+        url = f"{self.base_url}/message/sendText/{instance_name}"
         headers = {
-            "Authorization": f"Bearer {self.token}",
+            "apikey": apikey,
             "Content-Type": "application/json",
         }
         data = {
-            "messaging_product": "whatsapp",
-            "to": to_number,
-            "type": "text",
-            "text": {"body": message_body},
+            "number": to,
+            "text": body,
         }
 
         try:
@@ -30,38 +30,55 @@ class WhatsAppService:
             return response.json()
         except requests.exceptions.RequestException as e:
             print(f"Error sending WhatsApp message: {e}")
-            if response:
+            if "response" in locals() and response is not None:
                 print(f"Response: {response.text}")
             return None
 
-    def send_interactive_button(self, phone_number_id: str, to_number: str, body_text: str, buttons: list):
+    def send_list(
+        self,
+        instance_name: str,
+        apikey: str,
+        to: str,
+        title: str,
+        description: str,
+        button_text: str,
+        footer_text: str,
+        rows: list,
+    ):
         """
-        Sends a message with interactive buttons.
-        buttons format: [{"id": "btn1", "title": "Buy Now"}, ...]
+        Sends an interactive list message via Evolution API.
+        POST /message/sendList/{instance_name}
+
+        rows format: [{"title": "Option", "description": "...", "rowId": "opt_1"}, ...]
         """
-        url = f"{self.base_url}/{phone_number_id}/messages"
+        url = f"{self.base_url}/message/sendList/{instance_name}"
         headers = {
-            "Authorization": f"Bearer {self.token}",
+            "apikey": apikey,
             "Content-Type": "application/json",
         }
 
-        formatted_buttons = []
-        for btn in buttons:
-            formatted_buttons.append({"type": "reply", "reply": {"id": btn["id"], "title": btn["title"]}})
-
         data = {
-            "messaging_product": "whatsapp",
-            "to": to_number,
-            "type": "interactive",
-            "interactive": {"type": "button", "body": {"text": body_text}, "action": {"buttons": formatted_buttons}},
+            "number": to,
+            "title": title,
+            "description": description,
+            "buttonText": button_text,
+            "footerText": footer_text,
+            "sections": [
+                {
+                    "title": "Opciones",
+                    "rows": rows,
+                }
+            ],
         }
 
         try:
-            response = requests.post(url, headers=headers, json=data)
+            response = requests.post(url, headers=headers, json=data, timeout=15)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
-            print(f"Error sending WhatsApp interactive message: {e}")
+            print(f"Error sending WhatsApp list: {e}")
+            if "response" in locals() and response is not None:
+                print(f"Response: {response.text}")
             return None
 
 

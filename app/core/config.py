@@ -11,9 +11,8 @@ class Settings(BaseSettings):
     ADMIN_DATABASE_URL: Optional[str] = None
     ENCRYPTION_KEY: Optional[str] = None
 
-    # WhatsApp
-    WHATSAPP_API_TOKEN: str
-    WHATSAPP_VERIFY_TOKEN: str
+    # WhatsApp — Evolution API
+    EVOLUTION_API_URL: str
 
     # Calendar Webhook
     WEBHOOK_PUBLIC_URL: Optional[str] = None
@@ -26,8 +25,7 @@ class Settings(BaseSettings):
     # App Settings
     TIMEZONE: str = "America/Bogota"
 
-    class Config:
-        env_file = ".env"
+    model_config = {"env_file": ".env", "extra": "ignore"}
 
 
 settings = Settings()

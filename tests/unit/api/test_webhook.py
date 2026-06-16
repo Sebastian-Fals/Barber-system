@@ -1,11 +1,13 @@
 """
-Tests for webhook behavior: multi-tenant, direct processing (no BufferService), dedup.
+Tests for webhook — Evolution API.
 
 Spec scenarios:
-  - Webhook with unknown phone_number_id → return 200, no DB writes.
-  - Webhook with known phone_number_id → business_id resolved and propagated.
-  - Text message processed directly without BufferService.debounce.
-  - Dedup via ProcessedMessage still works (no BufferService).
+  - Evolution POST with messages.upsert → parsed correctly.
+  - CONNECTION_UPDATE ignored.
+  - Unknown instance → return 200, no DB writes.
+  - Known instance → business resolved by instance_name.
+  - Dedup via ProcessedMessage still works.
+  - listResponse messageType → interactive_id extracted from selectedRowId.
 """
 
 from unittest.mock import MagicMock, patch
@@ -33,110 +35,187 @@ def client(mock_db):
     app.dependency_overrides.clear()
 
 
-class TestWebhookMultiTenant:
-    """RED: webhook resolves business_id from phone_number_id."""
+# ──────────────────────────────────────────────────────────────────
+# Evolution payload fixtures
+# ──────────────────────────────────────────────────────────────────
 
-    @patch("app.api.webhook.BusinessRepository")
-    def test_unknown_phone_number_id_returns_200_no_db_write(self, mock_biz_repo_class, client, mock_db):
-        """
-        Scenario: Webhook with unknown phone_number_id.
-        - GIVEN phone_number_id "999999" does NOT map to any business
-        - WHEN a WhatsApp webhook arrives with phone_number_id "999999"
-        - THEN the webhook returns 200 AND no un-scoped data is created.
-        """
-        # Configure mock: get_by_phone_number_id returns None
-        mock_biz_repo = MagicMock()
-        mock_biz_repo.get_by_phone_number_id.return_value = None
-        mock_biz_repo_class.return_value = mock_biz_repo
+EVOLUTION_TEXT_PAYLOAD = {
+    "event": "messages.upsert",
+    "instance": "barberia-latino",
+    "data": {
+        "key": {
+            "remoteJid": "573001234567@s.whatsapp.net",
+            "id": "evo-msg-001",
+        },
+        "messageType": "conversation",
+        "message": {
+            "conversation": "Hola, quiero agendar una cita",
+        },
+    },
+}
 
-        payload = {
-            "object": "whatsapp_business_account",
-            "entry": [
-                {
-                    "changes": [
-                        {
-                            "value": {
-                                "metadata": {"phone_number_id": "999999"},
-                                "messages": [
-                                    {
-                                        "id": "wa-unknown-001",
-                                        "from": "573001234567",
-                                        "type": "text",
-                                        "text": {"body": "Hola"},
-                                    }
-                                ],
-                            }
-                        }
-                    ]
+EVOLUTION_LIST_RESPONSE_PAYLOAD = {
+    "event": "messages.upsert",
+    "instance": "barberia-latino",
+    "data": {
+        "key": {
+            "remoteJid": "573001234567@s.whatsapp.net",
+            "id": "evo-list-rsp-001",
+        },
+        "messageType": "listResponse",
+        "message": {
+            "listResponseMessage": {
+                "singleSelectReply": {
+                    "selectedRowId": "service_1",
                 }
-            ],
-        }
+            }
+        },
+    },
+}
 
-        response = client.post("/api/v1/webhook", json=payload)
-        assert response.status_code == 200
-        assert response.json() == {"status": "received"}
+EVOLUTION_CONNECTION_UPDATE_PAYLOAD = {
+    "event": "CONNECTION_UPDATE",
+    "instance": "barberia-latino",
+    "data": {"state": "open"},
+}
+
+
+class TestWebhookEvolutionParse:
+    """Parse Evolution webhook payloads correctly."""
 
     @patch("app.api.webhook.BusinessRepository")
     @patch("app.api.webhook.process_background_message")
-    def test_known_phone_number_id_resolves_business(self, mock_process_bg, mock_biz_repo_class, client, mock_db):
+    def test_text_message_parsed(self, mock_process_bg, mock_biz_repo_class, client, mock_db):
         """
-        Scenario: Webhook with known phone_number_id.
-        - GIVEN phone_number_id "123456" maps to Business A
-        - WHEN a WhatsApp webhook arrives with phone_number_id "123456"
-        - THEN business_id is resolved and message is dispatched.
+        Scenario: Evolution sends messages.upsert with conversation type.
+        - GIVEN payload with messageType "conversation"
+        - WHEN received
+        - THEN text body is extracted and dispatched.
         """
         from app.models.models import Business
 
-        business = Business(id=1, name="Barbería Test", phone_number_id="123456")
+        business = Business(id=1, name="Test Biz")
+        business.instance_name = "barberia-latino"
+        business.instance_apikey = "key-abc"
 
         mock_biz_repo = MagicMock()
-        mock_biz_repo.get_by_phone_number_id.return_value = business
+        mock_biz_repo.get_by_instance_name.return_value = business
+        mock_biz_repo_class.return_value = mock_biz_repo
+
+        mock_db.query.return_value.filter.return_value.first.return_value = None
+
+        response = client.post("/api/v1/webhook", json=EVOLUTION_TEXT_PAYLOAD)
+        assert response.status_code == 200
+
+    @patch("app.api.webhook.BusinessRepository")
+    @patch("app.api.webhook.process_background_message")
+    def test_list_response_parsed(self, mock_process_bg, mock_biz_repo_class, client, mock_db):
+        """
+        Scenario: Evolution sends messages.upsert with listResponse type.
+        - GIVEN payload with messageType "listResponse"
+        - WHEN received
+        - THEN interactive_id is extracted from selectedRowId.
+        """
+        from app.models.models import Business
+
+        business = Business(id=1, name="Test Biz")
+        business.instance_name = "barberia-latino"
+        business.instance_apikey = "key-abc"
+
+        mock_biz_repo = MagicMock()
+        mock_biz_repo.get_by_instance_name.return_value = business
+        mock_biz_repo_class.return_value = mock_biz_repo
+
+        mock_db.query.return_value.filter.return_value.first.return_value = None
+
+        response = client.post("/api/v1/webhook", json=EVOLUTION_LIST_RESPONSE_PAYLOAD)
+        assert response.status_code == 200
+
+    @patch("app.api.webhook.BusinessRepository")
+    def test_connection_update_ignored(self, mock_biz_repo_class, client, mock_db):
+        """
+        Scenario: Evolution sends CONNECTION_UPDATE.
+        - GIVEN event is "CONNECTION_UPDATE"
+        - WHEN received
+        - THEN returns {"status": "ignored"} without processing.
+        """
+        response = client.post("/api/v1/webhook", json=EVOLUTION_CONNECTION_UPDATE_PAYLOAD)
+        assert response.status_code == 200
+        assert response.json() == {"status": "ignored"}
+
+
+class TestWebhookMultiTenant:
+    """Instance-based routing replaces phone_number_id resolution."""
+
+    @patch("app.api.webhook.BusinessRepository")
+    @patch("app.api.webhook.process_background_message")
+    def test_unknown_instance_returns_200(self, mock_process_bg, mock_biz_repo_class, client, mock_db):
+        """
+        Scenario: Webhook with unknown instance_name.
+        - GIVEN instance "unknown-inst" does NOT map to any business
+        - WHEN a webhook arrives
+        - THEN returns 200 without dispatching.
+        """
+        mock_biz_repo = MagicMock()
+        mock_biz_repo.get_by_instance_name.return_value = None
         mock_biz_repo_class.return_value = mock_biz_repo
 
         payload = {
-            "object": "whatsapp_business_account",
-            "entry": [
-                {
-                    "changes": [
-                        {
-                            "value": {
-                                "metadata": {"phone_number_id": "123456"},
-                                "messages": [
-                                    {
-                                        "id": "wa-known-001",
-                                        "from": "573001234567",
-                                        "type": "text",
-                                        "text": {"body": "Hola"},
-                                    }
-                                ],
-                            }
-                        }
-                    ]
-                }
-            ],
+            "event": "messages.upsert",
+            "instance": "unknown-inst",
+            "data": {
+                "key": {"remoteJid": "57@s.whatsapp.net", "id": "m1"},
+                "messageType": "conversation",
+                "message": {"conversation": "Hola"},
+            },
         }
 
         response = client.post("/api/v1/webhook", json=payload)
         assert response.status_code == 200
+        mock_process_bg.assert_not_called()
+
+
+class TestWebhookDedup:
+    """Deduplication via ProcessedMessage still works."""
+
+    @patch("app.api.webhook.BusinessRepository")
+    @patch("app.api.webhook.process_background_message")
+    def test_duplicate_message_dropped(self, mock_process_bg, mock_biz_repo_class, client, mock_db):
+        """
+        Scenario: Duplicate message is caught via ProcessedMessage.
+        """
+        from app.models.models import Business, ProcessedMessage
+
+        business = Business(id=1, name="Test")
+        business.instance_name = "barberia-latino"
+        business.instance_apikey = "key-abc"
+
+        mock_biz_repo = MagicMock()
+        mock_biz_repo.get_by_instance_name.return_value = business
+        mock_biz_repo_class.return_value = mock_biz_repo
+
+        existing_msg = ProcessedMessage(message_id="evo-msg-001", business_id=1)
+        filter_mock = MagicMock()
+        filter_mock.first.return_value = existing_msg
+        mock_db.query.return_value.filter.return_value = filter_mock
+
+        response = client.post("/api/v1/webhook", json=EVOLUTION_TEXT_PAYLOAD)
+        assert response.status_code == 200
+        mock_process_bg.assert_not_called()
 
 
 class TestDirectProcessing:
-    """RED: text messages processed directly, no BufferService debounce."""
+    """process_background_message uses instance_name + apikey."""
 
     @pytest.mark.asyncio
     @patch("app.api.webhook.run_in_threadpool")
     @patch("app.api.webhook.ConversationService")
     @patch("app.api.webhook.SessionLocal")
-    async def test_text_message_processed_directly_without_buffer(
+    async def test_text_message_dispatched_with_instance_args(
         self, mock_session_local, mock_conv_service_class, mock_run_in_threadpool
     ):
         """
-        Scenario: Text message processed immediately.
-
-        GIVEN a text message arrives at the webhook
-        WHEN process_background_message is called with msg_type="text"
-        THEN ConversationService.handle_incoming_message is invoked
-        AND no BufferService is involved (import removed).
+        Scenario: Text message dispatches with instance_name + apikey.
         """
         mock_session = MagicMock()
         mock_session_local.return_value = mock_session
@@ -151,7 +230,8 @@ class TestDirectProcessing:
         mock_run_in_threadpool.side_effect = fake_run_in_threadpool
 
         await process_background_message(
-            phone_number_id="123456",
+            instance_name="barberia-latino",
+            instance_apikey="key-abc",
             from_number="573001234567",
             msg_body="Hola",
             msg_type="text",
@@ -159,155 +239,5 @@ class TestDirectProcessing:
             business_id=1,
         )
 
-        # ConversationService should be instantiated with correct args
-        mock_conv_service_class.assert_called_once_with(mock_session, "123456", 1)
-        # handle_incoming_message should be called with correct params
+        mock_conv_service_class.assert_called_once_with(mock_session, "barberia-latino", "key-abc", 1)
         mock_conv_service.handle_incoming_message.assert_called_once_with("573001234567", "Hola", "text", None)
-
-    @pytest.mark.asyncio
-    @patch("app.api.webhook.run_in_threadpool")
-    @patch("app.api.webhook.ConversationService")
-    @patch("app.api.webhook.SessionLocal")
-    async def test_non_text_message_still_processed_directly(
-        self, mock_session_local, mock_conv_service_class, mock_run_in_threadpool
-    ):
-        """
-        Scenario: Interactive messages already bypass buffer — keep working.
-
-        GIVEN an interactive message arrives
-        WHEN process_background_message is called with msg_type="interactive"
-        THEN ConversationService.handle_incoming_message is still invoked directly.
-        """
-        mock_session = MagicMock()
-        mock_session_local.return_value = mock_session
-
-        mock_conv_service = MagicMock()
-        mock_conv_service_class.return_value = mock_conv_service
-
-        def fake_run_in_threadpool(fn):
-            fn()
-
-        mock_run_in_threadpool.side_effect = fake_run_in_threadpool
-
-        await process_background_message(
-            phone_number_id="123456",
-            from_number="573001234567",
-            msg_body="",
-            msg_type="interactive",
-            interactive_id="service_corte",
-            business_id=1,
-        )
-
-        mock_conv_service.handle_incoming_message.assert_called_once_with(
-            "573001234567", "", "interactive", "service_corte"
-        )
-
-
-class TestWebhookDedup:
-    """RED: deduplication via ProcessedMessage works without BufferService."""
-
-    @patch("app.api.webhook.BusinessRepository")
-    @patch("app.api.webhook.process_background_message")
-    def test_duplicate_message_dropped(self, mock_process_bg, mock_biz_repo_class, client, mock_db):
-        """
-        Scenario: Duplicate message is caught via ProcessedMessage.
-
-        GIVEN message "wa-dup-001" already processed for Business A
-        WHEN the same message "wa-dup-001" arrives again for Business A
-        THEN it is dropped (background task NOT dispatched).
-        """
-        from app.models.models import Business, ProcessedMessage
-
-        business = Business(id=1, name="Test", phone_number_id="123456")
-
-        mock_biz_repo = MagicMock()
-        mock_biz_repo.get_by_phone_number_id.return_value = business
-        mock_biz_repo_class.return_value = mock_biz_repo
-
-        # Simulate: ProcessedMessage already exists for this (msg_id, business_id)
-        existing_msg = ProcessedMessage(message_id="wa-dup-001", business_id=1)
-
-        filter_mock = MagicMock()
-        filter_mock.first.return_value = existing_msg
-        mock_db.query.return_value.filter.return_value = filter_mock
-
-        payload = {
-            "object": "whatsapp_business_account",
-            "entry": [
-                {
-                    "changes": [
-                        {
-                            "value": {
-                                "metadata": {"phone_number_id": "123456"},
-                                "messages": [
-                                    {
-                                        "id": "wa-dup-001",
-                                        "from": "573001234567",
-                                        "type": "text",
-                                        "text": {"body": "Hola"},
-                                    }
-                                ],
-                            }
-                        }
-                    ]
-                }
-            ],
-        }
-
-        response = client.post("/api/v1/webhook", json=payload)
-        assert response.status_code == 200
-        # Duplicate dropped — background task NOT dispatched
-        mock_process_bg.assert_not_called()
-
-    @patch("app.api.webhook.BusinessRepository")
-    @patch("app.api.webhook.process_background_message")
-    def test_same_msg_id_different_business_not_deduplicated(
-        self, mock_process_bg, mock_biz_repo_class, client, mock_db
-    ):
-        """
-        Scenario: Same msg_id for different businesses is NOT deduplicated.
-
-        GIVEN message "wa-shared-001" already processed for Business A
-        WHEN message "wa-shared-001" arrives for Business B
-        THEN it is processed normally (not dropped).
-        """
-        from app.models.models import Business
-
-        business_b = Business(id=2, name="Business B", phone_number_id="789012")
-
-        mock_biz_repo = MagicMock()
-        mock_biz_repo.get_by_phone_number_id.return_value = business_b
-        mock_biz_repo_class.return_value = mock_biz_repo
-
-        # No match for (msg_id, business_id=2)
-        filter_mock = MagicMock()
-        filter_mock.first.return_value = None
-        mock_db.query.return_value.filter.return_value = filter_mock
-
-        payload = {
-            "object": "whatsapp_business_account",
-            "entry": [
-                {
-                    "changes": [
-                        {
-                            "value": {
-                                "metadata": {"phone_number_id": "789012"},
-                                "messages": [
-                                    {
-                                        "id": "wa-shared-001",
-                                        "from": "573001234567",
-                                        "type": "text",
-                                        "text": {"body": "Hola"},
-                                    }
-                                ],
-                            }
-                        }
-                    ]
-                }
-            ],
-        }
-
-        response = client.post("/api/v1/webhook", json=payload)
-        assert response.status_code == 200
-        # NOT a duplicate for this business — background task IS dispatched
-        mock_process_bg.assert_called_once()

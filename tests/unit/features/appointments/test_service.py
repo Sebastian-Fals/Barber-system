@@ -31,7 +31,7 @@ def _make_temp_db():
 
 def _seed_data(db: Session):
     """Seed minimal data for booking test."""
-    business = Business(name="Test Biz", phone_number_id="12345")
+    business = Business(name="Test Biz", instance_name="test-inst", instance_apikey="test-key")
     db.add(business)
     db.flush()
 

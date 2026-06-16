@@ -19,8 +19,8 @@ from app.services.handlers.base_handler import BaseHandler
 
 
 class QueryHandler(BaseHandler):
-    def __init__(self, db: Session, phone_number_id: str, business_id: int):
-        super().__init__(db, phone_number_id, business_id)
+    def __init__(self, db: Session, instance_name: str, instance_apikey: str, business_id: int):
+        super().__init__(db, instance_name, instance_apikey, business_id)
         self.customer_repo = CustomerRepository(db)
         self.barber_repo = BarberRepository(db)
         self.business_repo = BusinessRepository(db)
@@ -62,7 +62,7 @@ class QueryHandler(BaseHandler):
                     if not data.get("barber_id") or not data.get("date") or not data.get("time"):
                         logger.error(f"Missing booking data in confirmation payload: {data}")
                         whatsapp_service.send_message(
-                            self.phone_number_id,
+                            self.instance_name,
                             customer.phone,
                             "Lo siento, hubo un error con los datos de la cita. Por favor iniciemos de nuevo.",
                         )
@@ -75,7 +75,7 @@ class QueryHandler(BaseHandler):
                         )
                         logger.info(f"Booking created: {appt.id}")
                         whatsapp_service.send_message(
-                            self.phone_number_id, customer.phone, message_loader.get("booking_confirmed")
+                            self.instance_name, customer.phone, message_loader.get("booking_confirmed")
                         )
                         self.customer_repo.update_state(customer, CustomerData.IDLE)
                         self.customer_repo.update_data(customer, "{}")
@@ -83,7 +83,7 @@ class QueryHandler(BaseHandler):
                     except (SlotOccupiedError, BusinessCalendarError) as e:
                         logger.warning(f"Booking failed: {e}")
                         whatsapp_service.send_message(
-                            self.phone_number_id,
+                            self.instance_name,
                             customer.phone,
                             f"No se pudo agendar: {e} 📅",
                         )
@@ -91,7 +91,7 @@ class QueryHandler(BaseHandler):
                     except ServiceValidationError as e:
                         logger.error(f"Validation error: {e}")
                         whatsapp_service.send_message(
-                            self.phone_number_id,
+                            self.instance_name,
                             customer.phone,
                             "Hubo un problema con los datos recibidos. Por favor intenta de nuevo.",
                         )
@@ -99,7 +99,7 @@ class QueryHandler(BaseHandler):
                 except Exception as e:
                     logger.error(f"Error finalizing booking in QueryHandler: {e}", exc_info=True)
                     whatsapp_service.send_message(
-                        self.phone_number_id,
+                        self.instance_name,
                         customer.phone,
                         "Ocurrió un error al procesar tu confirmación. Intenta de nuevo.",
                     )
@@ -108,7 +108,7 @@ class QueryHandler(BaseHandler):
             elif any(x in msg_lower for x in negative):
                 # Reset
                 whatsapp_service.send_message(
-                    self.phone_number_id, customer.phone, "Entendido, no agendamos nada. ¿Qué necesitas?"
+                    self.instance_name, customer.phone, "Entendido, no agendamos nada. ¿Qué necesitas?"
                 )
                 self.customer_repo.update_state(customer, CustomerData.IDLE)
                 self.customer_repo.update_data(customer, "{}")
@@ -245,7 +245,7 @@ class QueryHandler(BaseHandler):
         # so AI and non-AI modes share the same interactive handling.
         from app.services.handlers.booking_handler import BookingHandler
 
-        booking_handler = BookingHandler(self.db, self.phone_number_id, self.business_id)
+        booking_handler = BookingHandler(self.db, self.instance_name, self.instance_apikey, self.business_id)
         booking_handler.handle_interactive(customer, interactive_id, payload)
 
     def _build_llm_context(self, customer: Customer) -> Dict[str, Any]:
@@ -388,7 +388,7 @@ class QueryHandler(BaseHandler):
         msg = header or message_loader.get("booking_ask_service")
         buttons = [{"id": f"service_{s.id}", "title": s.name} for s in services[:3]]
         buttons.append({"id": "cancel_flow", "title": "Cancelar"})
-        whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
+        self._send_list_from_buttons(customer.phone, msg, buttons)
 
     def _show_barber_buttons(self, customer: Customer, header: str = ""):
         """Send interactive barber selection buttons."""
@@ -396,7 +396,7 @@ class QueryHandler(BaseHandler):
         msg = header or message_loader.get("booking_ask_barber")
         buttons = [{"id": f"barber_{b.id}", "title": b.name} for b in barbers[:3]]
         buttons.append({"id": "cancel_flow", "title": "Cancelar"})
-        whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
+        self._send_list_from_buttons(customer.phone, msg, buttons)
 
     def _show_date_buttons(self, customer: Customer, header: str = ""):
         """Send interactive date selection buttons."""
@@ -406,7 +406,7 @@ class QueryHandler(BaseHandler):
             {"id": "date_tomorrow", "title": message_loader.get("btn_tomorrow")},
             {"id": "cancel_flow", "title": "Cancelar"},
         ]
-        whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
+        self._send_list_from_buttons(customer.phone, msg, buttons)
 
     def _show_slot_buttons(self, customer: Customer, data: dict, header: str = ""):
         """Send interactive slot selection buttons."""
@@ -421,7 +421,7 @@ class QueryHandler(BaseHandler):
 
             if not slots:
                 whatsapp_service.send_message(
-                    self.phone_number_id,
+                    self.instance_name,
                     customer.phone,
                     "No hay horarios disponibles para esa fecha. ¿Te va bien otro día?",
                 )
@@ -438,12 +438,12 @@ class QueryHandler(BaseHandler):
                 buttons.append({"id": f"time_{time_str}", "title": display})
 
             buttons.append({"id": "cancel_flow", "title": "Cancelar"})
-            whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
+            self._send_list_from_buttons(customer.phone, msg, buttons)
 
         except Exception as e:
             logger.error(f"Error showing slot buttons: {e}")
             whatsapp_service.send_message(
-                self.phone_number_id,
+                self.instance_name,
                 customer.phone,
                 "Por favor, indícame para qué fecha buscas.",
             )
@@ -464,7 +464,7 @@ class QueryHandler(BaseHandler):
             {"id": "confirm_no", "title": message_loader.get("btn_no")},
             {"id": "cancel_flow", "title": "Cancelar"},
         ]
-        whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
+        self._send_list_from_buttons(customer.phone, msg, buttons)
 
     def _handle_my_appointments(self, customer: Customer, reply_text: str):
         """
@@ -476,7 +476,7 @@ class QueryHandler(BaseHandler):
         if not appts:
             # Use LLM reply if friendly, else fallback
             msg = reply_text if reply_text else "No tienes citas programadas actualmente."
-            whatsapp_service.send_message(self.phone_number_id, customer.phone, msg)
+            whatsapp_service.send_message(self.instance_name, self.instance_apikey, customer.phone, msg)
             return
 
         # Build list
@@ -494,16 +494,14 @@ class QueryHandler(BaseHandler):
             msg += f"- *{day_str}, {time_str}* con {appt.barber.name}\n"
 
         msg += "\n(Escribe 'Cancelar' si deseas anular alguna)"
-        whatsapp_service.send_message(self.phone_number_id, customer.phone, msg)
+        whatsapp_service.send_message(self.instance_name, self.instance_apikey, customer.phone, msg)
 
     def _handle_cancellation_intent(self, customer: Customer, reply_text: str, extracted: Dict[str, Any] = None):
         # Text-Based Cancellation Flow
         appts = self.appt_repo.get_active_for_customer(customer.id)
 
         if not appts:
-            whatsapp_service.send_message(
-                self.phone_number_id, customer.phone, "No tienes citas activas para cancelar."
-            )
+            whatsapp_service.send_message(self.instance_name, customer.phone, "No tienes citas activas para cancelar.")
             return
 
         # Check if specific date/time was mentioned
@@ -544,16 +542,16 @@ class QueryHandler(BaseHandler):
                 success = self.booking_service.cancel_appointment(found_appt.id)
                 if success:
                     whatsapp_service.send_message(
-                        self.phone_number_id, customer.phone, f"✅ Cita del {date_match_label} cancelada correctamente."
+                        self.instance_name, customer.phone, f"✅ Cita del {date_match_label} cancelada correctamente."
                     )
                 else:
                     whatsapp_service.send_message(
-                        self.phone_number_id, customer.phone, "Hubo un error interno al cancelar. Intenta más tarde."
+                        self.instance_name, customer.phone, "Hubo un error interno al cancelar. Intenta más tarde."
                     )
                 return
             else:
                 whatsapp_service.send_message(
-                    self.phone_number_id,
+                    self.instance_name,
                     customer.phone,
                     f"No encontré citas para el {target_date_str}. Revisemos tu lista:",
                 )
@@ -568,7 +566,7 @@ class QueryHandler(BaseHandler):
 
         msg += "\nPara cancelar, dime qué día (ej: 'Cancelar la de mañana' o 'Cancelar la del sábado')."
 
-        whatsapp_service.send_message(self.phone_number_id, customer.phone, msg)
+        whatsapp_service.send_message(self.instance_name, self.instance_apikey, customer.phone, msg)
 
     def _get_spanish_day_name(self) -> str:
         days = {
@@ -632,7 +630,7 @@ class QueryHandler(BaseHandler):
         Helper to send via WhatsApp and log as assistant message.
         """
         # Send
-        whatsapp_service.send_message(self.phone_number_id, customer.phone, message)
+        whatsapp_service.send_message(self.instance_name, self.instance_apikey, customer.phone, message)
 
         # Log
         self._log_message(customer.id, "assistant", message)

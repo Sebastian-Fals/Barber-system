@@ -1,0 +1,14 @@
+services:
+  evolution-api:
+    image: atendai/evolution-api:v2.1.1
+    ports:
+      - "8080:8080"
+    environment:
+      AUTHENTICATION_API_KEY: ${EVOLUTION_GLOBAL_API_KEY}
+      SERVER_URL: http://localhost:8080
+    restart: unless-stopped
+    volumes:
+      - evolution_instances:/evolution/instances
+
+volumes:
+  evolution_instances:

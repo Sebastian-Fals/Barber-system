@@ -1,5 +1,5 @@
 """
-RED tests for 500ms cooldown in ConversationService.
+Tests for 500ms cooldown in ConversationService (Evolution migration).
 
 Spec scenarios:
   - Cooldown 500ms blocks consecutive messages <500ms from same user.
@@ -58,11 +58,11 @@ class TestCooldown:
         data = json.dumps({"_last_msg_ts": now - 0.3})  # 300ms ago
         customer = make_customer(data=data)
 
-        # Mock the repo to return this customer
         with patch.object(ConversationService, "__init__", lambda self, *a, **kw: None):
             service = ConversationService.__new__(ConversationService)
             service.db = mock_db
-            service.phone_number_id = "123456"
+            service.instance_name = "barberia-latino"
+            service.instance_apikey = "key-abc"
             service.business_id = 1
             service.customer_repo = MagicMock()
             service.customer_repo.get_by_phone.return_value = customer
@@ -74,15 +74,12 @@ class TestCooldown:
             business_mock.ai_enabled = False
             service.business_repo.get_by_id.return_value = business_mock
 
-            # Call handle_incoming_message — cooldown should block
             service.handle_incoming_message(
                 from_number="573001234567",
                 message_body="Hola",
                 message_type="text",
             )
 
-            # The message should have been DROPPED by cooldown.
-            # welcome_handler.handle_message should NOT be called.
             service.welcome_handler.handle_message.assert_not_called()
             service.booking_handler.handle_message.assert_not_called()
             service.query_handler.handle_message.assert_not_called()
@@ -102,7 +99,8 @@ class TestCooldown:
         with patch.object(ConversationService, "__init__", lambda self, *a, **kw: None):
             service = ConversationService.__new__(ConversationService)
             service.db = mock_db
-            service.phone_number_id = "123456"
+            service.instance_name = "barberia-latino"
+            service.instance_apikey = "key-abc"
             service.business_id = 1
             service.customer_repo = MagicMock()
             service.customer_repo.get_by_phone.return_value = customer
@@ -120,7 +118,6 @@ class TestCooldown:
                 message_type="text",
             )
 
-            # Cooldown should NOT block — welcome_handler is called (IDLE state, no AI)
             service.welcome_handler.handle_message.assert_called_once()
 
     def test_first_message_no_cooldown(self, mock_db):
@@ -136,7 +133,8 @@ class TestCooldown:
         with patch.object(ConversationService, "__init__", lambda self, *a, **kw: None):
             service = ConversationService.__new__(ConversationService)
             service.db = mock_db
-            service.phone_number_id = "123456"
+            service.instance_name = "barberia-latino"
+            service.instance_apikey = "key-abc"
             service.business_id = 1
             service.customer_repo = MagicMock()
             service.customer_repo.get_by_phone.return_value = customer
@@ -154,5 +152,4 @@ class TestCooldown:
                 message_type="text",
             )
 
-            # First message should always pass cooldown check
             service.welcome_handler.handle_message.assert_called_once()

@@ -19,9 +19,10 @@ class ConversationService:
     It delegates logic to specialized Handlers based on conversation state and input type.
     """
 
-    def __init__(self, db: Session, phone_number_id: str, business_id: int):
+    def __init__(self, db: Session, instance_name: str, instance_apikey: str, business_id: int):
         self.db = db
-        self.phone_number_id = phone_number_id
+        self.instance_name = instance_name
+        self.instance_apikey = instance_apikey
         self.business_id = business_id
 
         # Repositories
@@ -29,9 +30,9 @@ class ConversationService:
         self.business_repo = BusinessRepository(db)
 
         # Handlers — propagate business_id so they don't re-resolve it
-        self.welcome_handler = WelcomeHandler(db, phone_number_id, business_id)
-        self.booking_handler = BookingHandler(db, phone_number_id, business_id)
-        self.query_handler = QueryHandler(db, phone_number_id, business_id)
+        self.welcome_handler = WelcomeHandler(db, instance_name, instance_apikey, business_id)
+        self.booking_handler = BookingHandler(db, instance_name, instance_apikey, business_id)
+        self.query_handler = QueryHandler(db, instance_name, instance_apikey, business_id)
 
     def handle_incoming_message(
         self, from_number: str, message_body: str, message_type: str = "text", interactive_id: str = None
@@ -50,7 +51,7 @@ class ConversationService:
             self.customer_repo.update_state(customer, CustomerData.WAITING_NAME)
             from app.core.i18n import message_loader
 
-            whatsapp_service.send_message(self.phone_number_id, from_number, message_loader.get("welcome_ask_name"))
+            whatsapp_service.send_message(self.instance_name, from_number, message_loader.get("welcome_ask_name"))
             return
 
         # 2. Cooldown check: drop rapid-fire duplicates from same user (<500ms)
@@ -69,7 +70,7 @@ class ConversationService:
 
         except Exception as e:
             logger.error(f"Error handling message for {from_number}: {e}", exc_info=True)
-            whatsapp_service.send_message(self.phone_number_id, from_number, "Lo siento, tuve un error interno. 😔")
+            whatsapp_service.send_message(self.instance_name, from_number, "Lo siento, tuve un error interno. 😔")
 
     def _should_cooldown(self, customer: Customer) -> bool:
         """
@@ -100,7 +101,7 @@ class ConversationService:
             self.customer_repo.update_state(customer, CustomerData.WAITING_NAME)
             from app.core.i18n import message_loader
 
-            whatsapp_service.send_message(self.phone_number_id, customer.phone, message_loader.get("welcome_ask_name"))
+            whatsapp_service.send_message(self.instance_name, customer.phone, message_loader.get("welcome_ask_name"))
             return
 
         # 1. Global Commands (ALWAYS Check First)
@@ -148,7 +149,7 @@ class ConversationService:
             ]
             if len(new_name) < 3 or new_name.lower() in invalid_names:
                 whatsapp_service.send_message(
-                    self.phone_number_id,
+                    self.instance_name,
                     customer.phone,
                     "Hmm, ese no parece un nombre o es muy corto. 🤔\n¿Podrías decirme tu nombre real?",
                 )
@@ -198,7 +199,7 @@ class ConversationService:
             handled = self.booking_handler.handle_message(customer, message_body)
             if not handled:
                 whatsapp_service.send_message(
-                    self.phone_number_id, customer.phone, "Por favor, usa los botones del menú. 🙏"
+                    self.instance_name, customer.phone, "Por favor, usa los botones del menú. 🙏"
                 )
 
         else:

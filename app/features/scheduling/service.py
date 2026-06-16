@@ -89,13 +89,20 @@ def send_reminder_24h(appt: Appointment):
     ]
     # Note: WhatsApp allows max 3 buttons.
 
-    # We need to access phone_number_id.
-    # Assumption: Business phone id is linked to Barber's Business.
-    # In this MVP, we might need to fetch business or pass it.
-    # Let's assume singular business for now or fetch via Barber.
+    # Use Evolution API: instance_name + instance_apikey
     business = barber.business
     if business:
-        whatsapp_service.send_interactive_button(business.phone_number_id, customer.phone, msg, buttons)
+        rows = [{"title": btn["title"], "description": "", "rowId": btn["id"]} for btn in buttons]
+        whatsapp_service.send_list(
+            business.instance_name,
+            business.instance_apikey,
+            customer.phone,
+            title=msg,
+            description="",
+            button_text="Seleccionar",
+            footer_text="",
+            rows=rows,
+        )
 
 
 def send_reminder_1h(appt: Appointment):
@@ -111,7 +118,17 @@ def send_reminder_1h(appt: Appointment):
     ]
 
     if business:
-        whatsapp_service.send_interactive_button(business.phone_number_id, customer.phone, msg, buttons)
+        rows = [{"title": btn["title"], "description": "", "rowId": btn["id"]} for btn in buttons]
+        whatsapp_service.send_list(
+            business.instance_name,
+            business.instance_apikey,
+            customer.phone,
+            title=msg,
+            description="",
+            button_text="Seleccionar",
+            footer_text="",
+            rows=rows,
+        )
 
 
 def cleanup_processed_messages():

@@ -40,11 +40,12 @@ def manage_businesses(db: Session):
         if choice == "1":
             items = db.query(Business).all()
             for i in items:
-                print(f"ID: {i.id} | Name: {i.name} | PhoneID: {i.phone_number_id}")
+                print(f"ID: {i.id} | Name: {i.name} | Instance: {i.instance_name}")
 
         elif choice == "2":
             name = input("Name: ")
-            pid = input("WhatsApp Phone Number ID: ")
+            pid = input("Evolution Instance Name: ")
+            apikey = input("Instance API Key: ")
             cal_id = input("Google Calendar ID (optional): ")
 
             # Simple Schedule Builder
@@ -61,7 +62,8 @@ def manage_businesses(db: Session):
 
             b = Business(
                 name=name,
-                phone_number_id=pid,
+                instance_name=pid,
+                instance_apikey=apikey,
                 calendar_id=cal_id,
                 schedule=json.dumps(schedule),
                 open_hour=9,  # Legacy defaults
@@ -80,7 +82,8 @@ def manage_businesses(db: Session):
 
             print(f"Editing {b.name}...")
             b.name = input_or_default("Name", b.name)
-            b.phone_number_id = input_or_default("PhoneID", b.phone_number_id)
+            b.instance_name = input_or_default("Instance Name", b.instance_name)
+            b.instance_apikey = input_or_default("API Key", b.instance_apikey)
             b.calendar_id = input_or_default("Calendar ID", b.calendar_id)
 
             if input("Edit Schedule? (y/n) [n]: ").lower() == "y":

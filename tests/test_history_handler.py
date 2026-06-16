@@ -22,7 +22,7 @@ def handler(mock_db):
     ), patch(
         "app.services.handlers.query_handler.BookingService"
     ):
-        h = QueryHandler(mock_db, "phone_id", 1)
+        h = QueryHandler(mock_db, "phone_id", "apikey-test", 1)
         h.business = MagicMock(name="Biz")  # Mock business presence
         return h
 

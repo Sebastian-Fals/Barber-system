@@ -16,9 +16,14 @@ def add_business():
         print("❌ Name is required.")
         return
 
-    phone_number_id = input("Enter WhatsApp Phone Number ID (from Meta): ").strip()
-    if not phone_number_id:
-        print("❌ Phone Number ID is required.")
+    instance_name = input("Enter WhatsApp Instance Name (Evolution API): ").strip()
+    if not instance_name:
+        print("❌ Instance Name is required.")
+        return
+
+    instance_apikey = input("Enter Instance API Key: ").strip()
+    if not instance_apikey:
+        print("❌ API Key is required.")
         return
 
     phone = input("Enter Public Phone Number (optional): ").strip() or None
@@ -38,14 +43,17 @@ def add_business():
     db = SessionLocal()
     try:
         # Check existence
-        existing = db.query(Business).filter(Business.phone_number_id == phone_number_id).first()
+        existing = db.query(Business).filter(Business.instance_name == instance_name).first()
         if existing:
-            print(f"⚠️ Business with ID {phone_number_id} already exists (ID: {existing.id}, Name: {existing.name}).")
+            print(
+                f"⚠️ Business with instance '{instance_name}' already exists (ID: {existing.id}, Name: {existing.name})."
+            )
             return
 
         new_business = Business(
             name=name,
-            phone_number_id=phone_number_id,
+            instance_name=instance_name,
+            instance_apikey=instance_apikey,
             phone=phone,
             calendar_id=calendar_id,
             schedule=schedule,
@@ -57,7 +65,7 @@ def add_business():
 
         print(f"\n✅ Business '{new_business.name}' created successfully!")
         print(f"   ID: {new_business.id}")
-        print(f"   Phone ID: {new_business.phone_number_id}")
+        print(f"   Instance: {new_business.instance_name}")
 
     except Exception as e:
         print(f"❌ Error adding business: {e}")

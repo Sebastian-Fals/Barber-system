@@ -11,5 +11,5 @@ class BusinessRepository(BaseRepository[Business]):
         super().__init__(Business, db)
 
     # Add specific business queries if needed
-    def get_by_phone_number_id(self, phone_number_id: str) -> Optional[Business]:
-        return self.db.query(self.model).filter(self.model.phone_number_id == phone_number_id).first()
+    def get_by_instance_name(self, instance_name: str) -> Optional[Business]:
+        return self.db.query(self.model).filter(self.model.instance_name == instance_name).first()

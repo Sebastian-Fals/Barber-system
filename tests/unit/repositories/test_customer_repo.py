@@ -94,8 +94,8 @@ class TestConversationHistoryScoping:
             db = SessionLocal()
 
             # Seed two businesses
-            biz_a = Business(name="Biz A", phone_number_id="wa_biz_a")
-            biz_b = Business(name="Biz B", phone_number_id="wa_biz_b")
+            biz_a = Business(name="Biz A", instance_name="wa_biz_a", instance_apikey="key-a")
+            biz_b = Business(name="Biz B", instance_name="wa_biz_b", instance_apikey="key-b")
             db.add_all([biz_a, biz_b])
             db.flush()
 

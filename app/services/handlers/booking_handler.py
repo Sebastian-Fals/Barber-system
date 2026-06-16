@@ -27,8 +27,8 @@ from app.services.handlers.base_handler import BaseHandler
 
 
 class BookingHandler(BaseHandler):
-    def __init__(self, db: Session, phone_number_id: str, business_id: int):
-        super().__init__(db, phone_number_id, business_id)
+    def __init__(self, db: Session, instance_name: str, instance_apikey: str, business_id: int):
+        super().__init__(db, instance_name, instance_apikey, business_id)
         self.booking_service = BookingService(db)
         self.customer_repo = CustomerRepository(db)
         self.barber_repo = BarberRepository(db)
@@ -56,7 +56,8 @@ class BookingHandler(BaseHandler):
         if message_body and message_body.strip().lower() in ("cancelar", "cancel", "cancelar cita"):
             self._update_state(customer, CustomerData.IDLE, {})
             whatsapp_service.send_message(
-                self.phone_number_id,
+                self.instance_name,
+                self.instance_apikey,
                 customer.phone,
                 "Proceso cancelado. ¿En qué más puedo ayudarte?",
             )
@@ -113,7 +114,7 @@ class BookingHandler(BaseHandler):
         # Always include Cancel button
         buttons.append({"id": "cancel_flow", "title": "Cancelar"})
 
-        whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
+        self._send_list_from_buttons(customer.phone, msg, buttons)
 
     def _handle_barber_selection(self, customer: Customer, interactive_id: str):
         # ID format: barber_{id}
@@ -138,7 +139,7 @@ class BookingHandler(BaseHandler):
             {"id": "date_tomorrow", "title": message_loader.get("btn_tomorrow")},
             {"id": "cancel_flow", "title": "Cancelar"},
         ]
-        whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
+        self._send_list_from_buttons(customer.phone, msg, buttons)
 
     def _handle_date_selection(self, customer: Customer, interactive_id: str):
         # ID: date_today, date_tomorrow
@@ -162,7 +163,7 @@ class BookingHandler(BaseHandler):
 
         if not slots:
             msg = message_loader.get("booking_no_slots")
-            whatsapp_service.send_message(self.phone_number_id, customer.phone, msg)
+            whatsapp_service.send_message(self.instance_name, self.instance_apikey, customer.phone, msg)
             # Could offer buttons to select another date here
             return
 
@@ -203,7 +204,7 @@ class BookingHandler(BaseHandler):
         self._update_state(customer, CustomerData.SELECT_SLOT, data)
 
         msg = message_loader.get("booking_ask_time_header", date=target_date.strftime("%d/%m"))
-        whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
+        self._send_list_from_buttons(customer.phone, msg, buttons)
 
     def _handle_time_selection(self, customer: Customer, interactive_id: str):
         # ID: time_14:00
@@ -223,7 +224,7 @@ class BookingHandler(BaseHandler):
             {"id": "confirm_no", "title": message_loader.get("btn_no")},
             {"id": "cancel_flow", "title": "Cancelar"},
         ]
-        whatsapp_service.send_interactive_button(self.phone_number_id, customer.phone, msg, buttons)
+        self._send_list_from_buttons(customer.phone, msg, buttons)
 
     def _handle_pagination(self, customer: Customer, interactive_id: str):
         # ID: page_1
@@ -242,23 +243,31 @@ class BookingHandler(BaseHandler):
 
         try:
             self.booking_service.create_appointment(customer, data["barber_id"], data["date"], data["time"])
-            whatsapp_service.send_message(self.phone_number_id, customer.phone, message_loader.get("booking_confirmed"))
+            whatsapp_service.send_message(
+                self.instance_name, self.instance_apikey, customer.phone, message_loader.get("booking_confirmed")
+            )
             # Reset state
             self._update_state(customer, CustomerData.IDLE, {})
         except (SlotOccupiedError, BusinessCalendarError) as e:
-            whatsapp_service.send_message(self.phone_number_id, customer.phone, f"⚠️ {e}")
+            whatsapp_service.send_message(self.instance_name, self.instance_apikey, customer.phone, f"⚠️ {e}")
             self._update_state(customer, CustomerData.IDLE, {})
         except ServiceValidationError as e:
-            whatsapp_service.send_message(self.phone_number_id, customer.phone, f"❌ Error en los datos: {e}")
+            whatsapp_service.send_message(
+                self.instance_name, self.instance_apikey, customer.phone, f"❌ Error en los datos: {e}"
+            )
             self._update_state(customer, CustomerData.IDLE, {})
         except Exception as e:
             logger.error(f"Unexpected error in booking confirmation: {e}")
-            whatsapp_service.send_message(self.phone_number_id, customer.phone, message_loader.get("booking_error"))
+            whatsapp_service.send_message(
+                self.instance_name, self.instance_apikey, customer.phone, message_loader.get("booking_error")
+            )
             self._update_state(customer, CustomerData.IDLE, {})
 
     def _cancel_booking_process(self, customer: Customer):
         self._update_state(customer, CustomerData.IDLE, {})
-        whatsapp_service.send_message(self.phone_number_id, customer.phone, message_loader.get("btn_no") + " OK.")
+        whatsapp_service.send_message(
+            self.instance_name, self.instance_apikey, customer.phone, message_loader.get("btn_no") + " OK."
+        )
 
     def _finalize_cancellation(self, customer: Customer, interactive_id: str):
         # ID: cancel_appt_{id}
@@ -266,13 +275,15 @@ class BookingHandler(BaseHandler):
             appt_id = int(interactive_id.split("_")[2])
             success = self.booking_service.cancel_appointment(appt_id)
             if success:
-                whatsapp_service.send_message(self.phone_number_id, customer.phone, "✅ Cita cancelada correctamente.")
+                whatsapp_service.send_message(
+                    self.instance_name, self.instance_apikey, customer.phone, "✅ Cita cancelada correctamente."
+                )
             else:
                 whatsapp_service.send_message(
-                    self.phone_number_id,
+                    self.instance_name,
                     customer.phone,
                     "❌ No se pudo cancelar la cita (posiblemente ya pasada o inexistente).",
                 )
         except Exception as e:
             logger.error(f"Cancellation error: {e}")
-            whatsapp_service.send_message(self.phone_number_id, customer.phone, "Error interno.")
+            whatsapp_service.send_message(self.instance_name, self.instance_apikey, customer.phone, "Error interno.")
